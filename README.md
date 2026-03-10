@@ -1,6 +1,6 @@
 # Ogham MCP
 
-Persistent, searchable shared memory for AI coding agents. Works across clients.
+*Ogham* (pronounced "OH-am") — persistent, searchable shared memory for AI coding agents. Works across clients.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io%2Fogham--mcp%2Fogham--mcp-blue)](https://github.com/ogham-mcp/ogham-mcp/pkgs/container/ogham-mcp)
