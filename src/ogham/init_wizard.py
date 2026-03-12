@@ -51,7 +51,13 @@ def _client_configs() -> list[dict]:
             "format": "claude_desktop",
         },
         {
-            "name": "Claude Code",
+            "name": "Project .mcp.json (Claude Code + Cursor)",
+            "path": Path.cwd() / ".mcp.json",
+            "always_show": True,
+            "format": "mcp_json",
+        },
+        {
+            "name": "Claude Code (global)",
             "path": home / ".claude" / ".mcp.json",
             "detect": home / ".claude",
             "format": "mcp_json",
@@ -100,7 +106,9 @@ def _detect_clients() -> list[dict]:
         detect_dir = client.get("detect")
         detect_cmd = client.get("detect_cmd")
 
-        if detect_dir and detect_dir.exists():
+        if client.get("always_show"):
+            detected.append(client)
+        elif detect_dir and detect_dir.exists():
             detected.append(client)
         elif detect_cmd and shutil.which(detect_cmd):
             detected.append(client)
