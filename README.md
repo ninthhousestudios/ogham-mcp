@@ -7,7 +7,7 @@
 
 ## The problem
 
-AI coding agents forget everything between sessions. Switch from Claude Code to Cursor to OpenCode and context is lost. Decisions, gotchas, architectural patterns — all gone. You end up repeating yourself, re-explaining your codebase, re-debugging the same issues.
+AI coding agents forget everything between sessions. Switch from Claude Code to Cursor to Kiro to OpenCode and context is lost. Decisions, gotchas, architectural patterns — all gone. You end up repeating yourself, re-explaining your codebase, re-debugging the same issues.
 
 Ogham gives your agents a shared memory that persists across sessions and clients.
 
@@ -188,7 +188,7 @@ Ogham uses Supabase PostgreSQL with pgvector. Run the schema file that matches y
 Ogham runs as an MCP server over stdio. Your AI client connects to it like any other MCP tool.
 
 ```
-AI Client (Claude Code, Cursor, OpenCode, ...)
+AI Client (Claude Code, Cursor, Kiro, OpenCode, ...)
     |
     | stdio (MCP protocol)
     |

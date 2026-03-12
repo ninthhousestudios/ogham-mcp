@@ -3,7 +3,7 @@
 Walks users through database configuration, embedding provider selection,
 schema migration, and MCP client configuration.
 
-Supports: Claude Desktop, Claude Code, Cursor, VS Code (Copilot), Codex CLI, OpenCode.
+Supports: Claude Desktop, Claude Code, Cursor, VS Code (Copilot), Codex CLI, Kiro, OpenCode.
 Platforms: macOS, Linux, Windows.
 Execution modes: uvx (default), Docker (GHCR image).
 """
@@ -73,6 +73,12 @@ def _client_configs() -> list[dict]:
             "path": home / ".codex" / "config.toml",
             "detect_cmd": "codex",
             "format": "codex_toml",
+        },
+        {
+            "name": "Kiro",
+            "path": home / ".kiro" / "settings" / "mcp.json",
+            "detect": home / ".kiro",
+            "format": "mcp_json",
         },
         {
             "name": "OpenCode",
