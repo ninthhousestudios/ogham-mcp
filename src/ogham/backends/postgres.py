@@ -44,8 +44,8 @@ class PostgresBackend:
                 raise RuntimeError("DATABASE_URL is required for PostgresBackend")
             self._pool = ConnectionPool(
                 conninfo=settings.database_url,
-                min_size=1,
-                max_size=5,
+                min_size=5,
+                max_size=20,
                 kwargs={"row_factory": dict_row},
             )
         return self._pool
