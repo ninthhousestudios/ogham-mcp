@@ -238,9 +238,11 @@ Ogham works with Supabase or vanilla PostgreSQL. Run the schema file that matche
 
 | File | Use case |
 |------|----------|
-| `sql/schema.sql` | Supabase Cloud |
+| `sql/schema.sql` | [Supabase](https://supabase.com) Cloud |
 | `sql/schema_selfhost_supabase.sql` | Self-hosted Supabase with RLS |
-| `sql/schema_postgres.sql` | Vanilla PostgreSQL / Neon (no RLS) |
+| `sql/schema_postgres.sql` | Vanilla PostgreSQL / [Neon](https://neon.tech) (no RLS) |
+
+Supabase and Neon both include pgvector out of the box -- no extra setup needed. If you're self-hosting Postgres, you need PostgreSQL 15+ with the [pgvector](https://github.com/pgvector/pgvector) extension installed. We develop and test against PostgreSQL 17.
 
 For Postgres, set `DATABASE_BACKEND=postgres` and `DATABASE_URL=postgresql://...` in your environment.
 
