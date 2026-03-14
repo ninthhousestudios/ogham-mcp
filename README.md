@@ -244,7 +244,19 @@ Ogham ships with three workflow skills in `skills/` that teach AI assistants how
 
 The skills orchestrate existing MCP tools -- they don't replace them. The MCP server must be connected for skills to work.
 
-To install (Claude Code):
+Install all three with npx:
+
+```bash
+npx skills add ogham-mcp/ogham-mcp
+```
+
+Or install a specific skill:
+
+```bash
+npx skills add ogham-mcp/ogham-mcp --skill ogham-recall
+```
+
+Manual install (copy from a local clone):
 
 ```bash
 cp -r skills/ogham-research skills/ogham-recall skills/ogham-maintain ~/.claude/skills/
