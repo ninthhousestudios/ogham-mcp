@@ -7,7 +7,8 @@ description: |
   Triggers on "clean up my memory", "memory stats", "how many memories",
   "export my brain", "export memories", "review knowledge graph", "re-embed",
   "link unlinked", "backfill links", "memory health", "ogham stats",
-  "cleanup expired", or any admin/maintenance request for Ogham.
+  "cleanup expired", "condense old memories", "compress memories",
+  or any admin/maintenance request for Ogham.
   Requires the Ogham MCP server to be connected.
 ---
 
@@ -64,6 +65,20 @@ After: suggest running `link_unlinked` to rebuild the knowledge graph with the n
 - The user can set `batch_size` to control how many are processed at once
 
 Report how many links were created when it finishes.
+
+### Condense old memories
+
+`compress_old_memories` shrinks old, inactive memories to save space and reduce search noise.
+
+Three levels:
+- Full text (default, recent memories)
+- Condensed (key sentences, code blocks preserved, ~30% of original)
+- Trace (one-line summary with tags)
+
+Before running:
+1. Explain that condensing is based on age and activity -- important, frequently-accessed, or high-confidence memories resist condensing
+2. Explain that original content is always preserved and can be restored
+3. Run `compress_old_memories` -- it reports how many were condensed at each level
 
 ### Profile management
 

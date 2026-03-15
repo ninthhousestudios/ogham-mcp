@@ -23,6 +23,8 @@ Don't just run one search and call it done. Different queries surface different 
 
 Start with `hybrid_search` using the user's query. This combines semantic similarity with keyword matching, so "us-east-1" and "which AWS region do we use" both work.
 
+For queries that need connections between memories, use `graph_depth=1` to automatically follow relationship edges from the top results. This surfaces related memories that didn't match the query directly but are linked to matches.
+
 If the results look thin, try rephrasing. A query about "database setup" might miss memories tagged with "postgres" or "supabase" -- try both angles.
 
 ### Step 2: Follow the graph
