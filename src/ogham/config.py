@@ -14,11 +14,13 @@ PROVIDER_BATCH_DEFAULTS: dict[str, int] = {
 }
 
 # Default embedding dimensions per provider (used when EMBEDDING_DIM is not set).
+# Most providers default to 512 to match the shipped schema (vector(512)).
+# Mistral is the exception -- mistral-embed only supports 1024.
 PROVIDER_DEFAULT_DIMS: dict[str, int] = {
     "ollama": 512,
-    "openai": 1024,
+    "openai": 512,
     "mistral": 1024,
-    "voyage": 1024,
+    "voyage": 512,
 }
 
 
