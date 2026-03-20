@@ -186,7 +186,7 @@ def test_store_memories_batch():
     ]
 
     with patch("ogham.backends.supabase.SupabaseBackend._get_client") as mock_client:
-        mock_table = mock_client.return_value.table.return_value
+        mock_table = mock_client.return_value.from_.return_value
         mock_insert = mock_table.insert.return_value
         mock_insert.execute.return_value.data = [
             {"id": "id-1", "content": "memory one"},
@@ -207,7 +207,7 @@ def test_store_memories_batch_empty():
         result = store_memories_batch([])
 
     assert result == []
-    mock_client.return_value.table.return_value.insert.assert_not_called()
+    mock_client.return_value.from_.return_value.insert.assert_not_called()
 
 
 def test_build_row():

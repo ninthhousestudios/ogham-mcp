@@ -1,11 +1,9 @@
-"""Supabase backend — wraps the PostgREST / Supabase client."""
+"""Supabase backend — wraps PostgREST directly (no supabase SDK needed)."""
 
 import logging
 from typing import Any
 
-import httpx
-from supabase import Client, ClientOptions, create_client
-from yarl import URL as YarlURL
+from postgrest import SyncPostgrestClient
 
 from ogham.config import settings
 from ogham.retry import with_retry
@@ -14,24 +12,31 @@ logger = logging.getLogger(__name__)
 
 
 class SupabaseBackend:
-    """DatabaseBackend implementation backed by Supabase (PostgREST)."""
+    """DatabaseBackend implementation backed by Supabase/PostgREST.
+
+    Uses postgrest-py directly instead of the supabase SDK to avoid
+    heavy transitive dependencies (storage3, pyiceberg, pyroaring).
+    """
 
     def __init__(self) -> None:
-        self._client: Client | None = None
+        self._client: SyncPostgrestClient | None = None
 
-    def _get_client(self) -> Client:
+    def _get_client(self) -> SyncPostgrestClient:
         if self._client is None:
-            self._client = create_client(
-                settings.supabase_url,
-                settings.supabase_key,
-                options=ClientOptions(
-                    postgrest_client_timeout=120,
-                    httpx_client=httpx.Client(timeout=120, verify=True),
-                ),
-            )
-            # Bare PostgREST (no Kong gateway) doesn't serve /rest/v1/ prefix.
             if settings.bare_postgrest:
-                self._client.postgrest.base_url = YarlURL(settings.supabase_url)
+                base_url = settings.supabase_url
+            else:
+                base_url = f"{settings.supabase_url}/rest/v1"
+
+            self._client = SyncPostgrestClient(
+                base_url,
+                headers={
+                    "apikey": settings.supabase_key,
+                    "Authorization": f"Bearer {settings.supabase_key}",
+                    "Prefer": "return=representation",
+                },
+                timeout=120,
+            )
         return self._client
 
     def store_memory(
@@ -58,7 +63,7 @@ class SupabaseBackend:
         }
         if expires_at is not None:
             row["expires_at"] = expires_at
-        result = self._get_client().table("memories").insert(row).execute()
+        result = self._get_client().from_("memories").insert(row).execute()
         if not result.data:
             raise RuntimeError(
                 "Insert returned no data — check Supabase connection and table permissions"
@@ -66,14 +71,9 @@ class SupabaseBackend:
         return result.data[0]
 
     def store_memories_batch(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Insert multiple memories in a single PostgREST request.
-
-        Each row must already have: content, embedding (as str), profile, metadata, source, tags.
-        Optionally: expires_at.
-        """
         if not rows:
             return []
-        result = self._get_client().table("memories").insert(rows).execute()
+        result = self._get_client().from_("memories").insert(rows).execute()
         if not result.data:
             raise RuntimeError(
                 "Batch insert returned no data — check Supabase connection and table permissions"
@@ -111,7 +111,6 @@ class SupabaseBackend:
         profile: str,
         threshold: float = 0.8,
     ) -> list[bool]:
-        """Check multiple embeddings for duplicates in a single RPC call."""
         if not query_embeddings:
             return []
         params = {
@@ -156,7 +155,7 @@ class SupabaseBackend:
     ) -> list[dict[str, Any]]:
         query = (
             self._get_client()
-            .table("memories")
+            .from_("memories")
             .select(
                 "id, content, metadata, source, profile, tags,"
                 " created_at, updated_at, expires_at, access_count, last_accessed_at, confidence"
@@ -173,28 +172,17 @@ class SupabaseBackend:
 
     @with_retry(max_attempts=2, base_delay=0.3)
     def get_memory_stats(self, profile: str) -> dict[str, Any]:
-        """Get memory statistics for a profile using SQL aggregation."""
         result = (
             self._get_client().rpc("get_memory_stats_sql", {"filter_profile": profile}).execute()
         )
         if not result.data:
-            return {
-                "profile": profile,
-                "total": 0,
-                "sources": {},
-                "top_tags": [],
-            }
+            return {"profile": profile, "total": 0, "sources": {}, "top_tags": []}
         if isinstance(result.data, dict):
             return result.data
         return result.data[0]
 
     @with_retry(max_attempts=2, base_delay=0.3)
     def get_all_memories_full(self, profile: str) -> list[dict[str, Any]]:
-        """Fetch all memory fields (except embedding) for a profile. Excludes expired.
-
-        Uses keyset pagination (cursor on created_at, id) to avoid
-        OFFSET performance degradation on large tables.
-        """
         rows: list[dict[str, Any]] = []
         batch = 1000
         last_created_at: str | None = None
@@ -202,7 +190,7 @@ class SupabaseBackend:
         while True:
             query = (
                 self._get_client()
-                .table("memories")
+                .from_("memories")
                 .select(
                     "id, content, metadata, source, profile, tags,"
                     " created_at, updated_at, expires_at,"
@@ -227,15 +215,11 @@ class SupabaseBackend:
 
     @with_retry(max_attempts=2, base_delay=0.3)
     def get_all_memories_content(self, profile: str | None = None) -> list[dict[str, Any]]:
-        """Fetch id and content for memories. Optionally filter by profile.
-
-        Uses keyset pagination on id to avoid OFFSET degradation.
-        """
         rows: list[dict[str, Any]] = []
         batch = 1000
         last_id: str | None = None
         while True:
-            query = self._get_client().table("memories").select("id, content")
+            query = self._get_client().from_("memories").select("id, content")
             if profile:
                 query = query.eq("profile", profile)
             if last_id is not None:
@@ -249,33 +233,26 @@ class SupabaseBackend:
 
     @with_retry(max_attempts=2, base_delay=0.3)
     def list_profiles(self) -> list[dict[str, Any]]:
-        """Get distinct profiles with memory counts using SQL aggregation."""
         result = self._get_client().rpc("get_profile_counts", {}).execute()
         return result.data
 
     def batch_update_embeddings(self, ids: list[str], embeddings: list[list[float]]) -> int:
-        """Batch update embeddings for multiple memories in a single RPC call."""
         result = (
             self._get_client()
             .rpc(
                 "batch_update_embeddings",
-                {
-                    "memory_ids": ids,
-                    "new_embeddings": [str(e) for e in embeddings],
-                },
+                {"memory_ids": ids, "new_embeddings": [str(e) for e in embeddings]},
             )
             .execute()
         )
         return result.data if isinstance(result.data, int) else 0
 
     def record_access(self, memory_ids: list[str]) -> None:
-        """Increment access_count and update last_accessed_at for returned search results."""
         if not memory_ids:
             return
         self._get_client().rpc("record_access", {"memory_ids": memory_ids}).execute()
 
     def update_confidence(self, memory_id: str, signal: float, profile: str) -> float:
-        """Update confidence via Bayesian posterior. Returns new confidence value."""
         result = (
             self._get_client()
             .rpc(
@@ -289,7 +266,7 @@ class SupabaseBackend:
     def get_memory_by_id(self, memory_id: str, profile: str) -> dict[str, Any] | None:
         result = (
             self._get_client()
-            .table("memories")
+            .from_("memories")
             .select("*")
             .eq("id", memory_id)
             .eq("profile", profile)
@@ -305,7 +282,7 @@ class SupabaseBackend:
     def delete_memory(self, memory_id: str, profile: str) -> bool:
         result = (
             self._get_client()
-            .table("memories")
+            .from_("memories")
             .delete()
             .eq("id", memory_id)
             .eq("profile", profile)
@@ -318,7 +295,7 @@ class SupabaseBackend:
     ) -> dict[str, Any]:
         result = (
             self._get_client()
-            .table("memories")
+            .from_("memories")
             .update(updates)
             .eq("id", memory_id)
             .eq("profile", profile)
@@ -329,10 +306,9 @@ class SupabaseBackend:
         return result.data[0]
 
     def get_profile_ttl(self, profile: str) -> int | None:
-        """Get the TTL in days for a profile. Returns None if not set."""
         result = (
             self._get_client()
-            .table("profile_settings")
+            .from_("profile_settings")
             .select("ttl_days")
             .eq("profile", profile)
             .execute()
@@ -342,13 +318,11 @@ class SupabaseBackend:
         return result.data[0].get("ttl_days")
 
     def set_profile_ttl(self, profile: str, ttl_days: int | None) -> dict[str, Any]:
-        """Set or clear the TTL for a profile. Pass None to remove TTL."""
         row = {"profile": profile, "ttl_days": ttl_days}
-        result = self._get_client().table("profile_settings").upsert(row).execute()
+        result = self._get_client().from_("profile_settings").upsert(row).execute()
         return result.data[0]
 
     def cleanup_expired(self, profile: str) -> int:
-        """Delete expired memories for a profile. Returns count of deleted rows."""
         result = (
             self._get_client()
             .rpc("cleanup_expired_memories", {"target_profile": profile})
@@ -357,7 +331,6 @@ class SupabaseBackend:
         return result.data if isinstance(result.data, int) else 0
 
     def count_expired(self, profile: str) -> int:
-        """Count expired memories for a profile."""
         result = (
             self._get_client().rpc("count_expired_memories", {"target_profile": profile}).execute()
         )
@@ -372,7 +345,6 @@ class SupabaseBackend:
         threshold: float = 0.85,
         max_links: int = 5,
     ) -> int:
-        """Auto-link a memory to similar existing memories. Returns count of links created."""
         result = (
             self._get_client()
             .rpc(
@@ -397,10 +369,6 @@ class SupabaseBackend:
         max_links: int = 5,
         batch_size: int = 100,
     ) -> int:
-        """Bulk backfill auto-links for memories with no outgoing auto edges.
-
-        Returns processed count.
-        """
         result = (
             self._get_client()
             .rpc(
@@ -428,7 +396,6 @@ class SupabaseBackend:
         tags: list[str] | None = None,
         source: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Explore knowledge graph: hybrid search seeds + relationship traversal."""
         params: dict[str, Any] = {
             "query_text": query_text,
             "query_embedding": str(query_embedding),
@@ -454,7 +421,6 @@ class SupabaseBackend:
         created_by: str = "user",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Create a relationship edge between two memories."""
         row = {
             "source_id": source_id,
             "target_id": target_id,
@@ -463,7 +429,7 @@ class SupabaseBackend:
             "created_by": created_by,
             "metadata": metadata or {},
         }
-        result = self._get_client().table("memory_relationships").insert(row).execute()
+        result = self._get_client().from_("memory_relationships").insert(row).execute()
         if not result.data:
             raise RuntimeError("Insert returned no data for relationship")
         return result.data[0]
@@ -477,7 +443,6 @@ class SupabaseBackend:
         relationship_types: list[str] | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Traverse relationship graph from a memory. Returns connected memories."""
         params: dict[str, Any] = {
             "start_id": memory_id,
             "max_depth": depth,

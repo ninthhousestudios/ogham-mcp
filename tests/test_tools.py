@@ -296,7 +296,7 @@ def test_update_memory_not_found(mock_embedding):
     mock_result.data = []
 
     with patch("ogham.backends.supabase.SupabaseBackend._get_client") as mock_client:
-        mock_update = mock_client.return_value.table.return_value.update
+        mock_update = mock_client.return_value.from_.return_value.update
         mock_update.return_value.eq.return_value.eq.return_value.execute.return_value = mock_result
 
         with pytest.raises(KeyError, match="not found in profile"):
@@ -315,7 +315,7 @@ def test_store_memory_insert_failure(mock_embedding):
     mock_result.data = []
 
     with patch("ogham.backends.supabase.SupabaseBackend._get_client") as mock_client:
-        mock_client.return_value.table.return_value.insert.return_value.execute.return_value = (
+        mock_client.return_value.from_.return_value.insert.return_value.execute.return_value = (
             mock_result
         )
 
@@ -449,7 +449,7 @@ def test_check_database_success():
     from ogham.health import check_database
 
     mock_backend = MagicMock()
-    chain = mock_backend._get_client.return_value.table.return_value
+    chain = mock_backend._get_client.return_value.from_.return_value
     chain.select.return_value.limit.return_value.execute.return_value = MagicMock()
 
     with patch("ogham.health.get_backend", return_value=mock_backend):
@@ -698,7 +698,7 @@ def test_get_profile_ttl():
     mock_result.data = [{"profile": "work", "ttl_days": 90}]
 
     with patch("ogham.backends.supabase.SupabaseBackend._get_client") as mock_client:
-        chain = mock_client.return_value.table.return_value.select.return_value
+        chain = mock_client.return_value.from_.return_value.select.return_value
         chain.eq.return_value.execute.return_value = mock_result
         result = get_profile_ttl("work")
 
@@ -715,7 +715,7 @@ def test_get_profile_ttl_not_set():
     mock_result.data = []
 
     with patch("ogham.backends.supabase.SupabaseBackend._get_client") as mock_client:
-        chain = mock_client.return_value.table.return_value.select.return_value
+        chain = mock_client.return_value.from_.return_value.select.return_value
         chain.eq.return_value.execute.return_value = mock_result
         result = get_profile_ttl("personal")
 
@@ -732,7 +732,7 @@ def test_set_profile_ttl():
     mock_result.data = [{"profile": "work", "ttl_days": 90}]
 
     with patch("ogham.backends.supabase.SupabaseBackend._get_client") as mock_client:
-        chain = mock_client.return_value.table.return_value
+        chain = mock_client.return_value.from_.return_value
         chain.upsert.return_value.execute.return_value = mock_result
         result = set_profile_ttl("work", 90)
 

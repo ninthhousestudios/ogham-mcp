@@ -1,6 +1,6 @@
 [project]
 name = "ogham-mcp"
-version = "0.4.4"
+version = "0.4.5"
 description = "Shared memory MCP server — persistent, searchable, cross-client"
 readme = "README.md"
 license = "MIT"
@@ -17,7 +17,7 @@ classifiers = [
 
 dependencies = [
     "fastmcp>=2.14",
-    "supabase>=2.0",
+    "postgrest>=2.0",
     "pydantic-settings>=2.0",
     "python-dotenv>=1.0",
     "ollama>=0.4",
