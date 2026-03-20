@@ -1,6 +1,6 @@
 [project]
 name = "ogham-mcp"
-version = "0.4.3"
+version = "0.4.4"
 description = "Shared memory MCP server — persistent, searchable, cross-client"
 readme = "README.md"
 license = "MIT"
@@ -59,13 +59,15 @@ target-version = "py313"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+select = ["E", "F", "I", "W", "S"]
+# S608: SQL in postgres.py -- all parameterised queries, column names are internal
+# S104: bind 0.0.0.0 in http_health.py -- intentional for Docker
+ignore = ["S608", "S104", "S101"]
 
-[tool.bandit]
-# B608: SQL "injection" in postgres.py -- all parameterised queries, column names are internal
-# B104: bind 0.0.0.0 in http_health.py -- intentional for Docker
-skips = ["B608", "B104"]
-exclude_dirs = ["tests", "benchmarks", "extras"]
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S"]
+"benchmarks/**" = ["S"]
+"extras/**" = ["S"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ogham"]

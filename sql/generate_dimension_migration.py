@@ -91,9 +91,7 @@ def generate_migration(target_dim: int, schema_type: str) -> str:
         func_name = name_match.group(1) if name_match else "unknown"
 
         # Replace dimension
-        updated = re.sub(
-            r"vector\(\d+\)", f"vector({target_dim})", func, flags=re.IGNORECASE
-        )
+        updated = re.sub(r"vector\(\d+\)", f"vector({target_dim})", func, flags=re.IGNORECASE)
         # For supabase schema, also handle extensions.vector
         if schema_type == "supabase":
             updated = re.sub(
@@ -128,7 +126,7 @@ def main():
         "--schema",
         choices=["supabase", "selfhost", "postgres"],
         default="postgres",
-        help="Which schema file to use: supabase (cloud), selfhost (Supabase Docker+RLS), postgres (Neon/vanilla PG). Default: postgres",
+        help="Schema: supabase (cloud), selfhost (Docker+RLS), postgres (Neon). Default: postgres",
     )
     args = parser.parse_args()
 
