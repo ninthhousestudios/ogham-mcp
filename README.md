@@ -4,6 +4,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io%2Fogham--mcp%2Fogham--mcp-blue)](https://github.com/ogham-mcp/ogham-mcp/pkgs/container/ogham-mcp)
+[![Python 3.13+](https://img.shields.io/badge/Python-3.13%2B-blue)](https://python.org)
+[![PyPI](https://img.shields.io/pypi/v/ogham-mcp)](https://pypi.org/project/ogham-mcp/)
 
 ## The problem
 
@@ -334,6 +336,29 @@ Full docs and integration guides at [ogham-mcp.dev](https://ogham-mcp.dev).
 Inspired by [Nate B Jones](https://www.youtube.com/watch?v=2JiMmye2ezg) and his work on persistent AI memory.
 
 Named after [Ogham](https://en.wikipedia.org/wiki/Ogham), the ancient Irish alphabet carved into stone -- the original persistent memory.
+
+## Changelog
+
+### v0.4.4 (2026-03-20)
+
+- Python 3.14 support (tested and verified)
+- Fixed deprecated asyncio APIs (`new_event_loop`/`set_event_loop` replaced with `asyncio.run()`)
+- Docker image updated to Python 3.14-slim
+- Upgraded pyroaring for 3.14 C extension compatibility
+- Agent Zero FAISS memory import (`agent_zero_import.py` library)
+
+### v0.4.3 (2026-03-19)
+
+- Fixed `psycopg` missing module error for Postgres/Neon users
+- Added `psycopg` to the `[all]` extra
+- Better error messages when database driver is missing
+- Updated Quick Start docs for Postgres users
+
+### v0.4.2 (2026-03-16)
+
+- Launch release
+- `ogham-mcp` script alias for `uvx ogham-mcp`
+- Default embedding dimensions fixed (OpenAI/Voyage default to 512)
 
 ## License
 
