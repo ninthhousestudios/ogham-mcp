@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import sys
 import threading
 
@@ -61,11 +60,12 @@ def main(
 
             logger.info("Starting health check endpoint on port %s", settings.health_port)
 
+            async def _serve_health():
+                server = await start_health_server(settings.health_port)
+                await server.serve_forever()
+
             def run_health_server():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(start_health_server(settings.health_port))
-                loop.run_forever()
+                asyncio.run(_serve_health())
 
             health_thread = threading.Thread(target=run_health_server, daemon=True)
             health_thread.start()
@@ -73,7 +73,9 @@ def main(
         try:
             mcp.run()
         except KeyboardInterrupt:
-            os._exit(0)
+            import sys
+
+            sys.exit(0)
 
 
 if __name__ == "__main__":
