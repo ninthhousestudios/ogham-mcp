@@ -44,7 +44,7 @@
 | **Ogham** | **97.2%** | 1 SQL query (pgvector + tsvector CCF hybrid search) |
 | [LongMemEval paper](https://arxiv.org/abs/2410.10813) baseline | 78.4% | Session decomposition + fact-augmented keys |
 
-[Zikkaron](https://github.com/amanhij/Zikkaron) also reports 96.7% R@10 using cross-encoder reranking, NLI verification, and thermodynamic scoring.
+Other retrieval systems that report similar R@10 numbers typically use cross-encoder reranking, NLI verification, knowledge graph enrichment, and LLM-as-a-judge pipelines. Ogham reaches 97.2% with one Postgres query.
 
 These tables measure different things. QA accuracy tests whether the full system (retrieval + LLM) produces the correct answer. R@10 tests whether retrieval alone finds the right memories. Ogham is a retrieval engine -- it finds the memories, your LLM reads them.
 
