@@ -50,6 +50,7 @@ class SupabaseBackend:
         expires_at: str | None = None,
         importance: float = 0.5,
         surprise: float = 0.5,
+        recurrence_days: list[int] | None = None,
     ) -> dict[str, Any]:
         row = {
             "content": content,
@@ -63,6 +64,8 @@ class SupabaseBackend:
         }
         if expires_at is not None:
             row["expires_at"] = expires_at
+        if recurrence_days is not None:
+            row["recurrence_days"] = recurrence_days
         result = self._get_client().from_("memories").insert(row).execute()
         if not result.data:
             raise RuntimeError(

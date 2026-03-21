@@ -46,6 +46,328 @@ _RELATIVE_PHRASES = re.compile(
     re.IGNORECASE,
 )
 
+# --- Multilingual day names → day index (0=Sun..6=Sat) ---
+# Covers 16 languages matching the importance scoring dictionaries.
+# Each entry maps a lowercase day name to its dow index.
+
+_DAY_NAMES: dict[str, int] = {}
+_DAY_NAMES_BY_LANG: dict[str, dict[str, int]] = {
+    "en": {
+        "sunday": 0,
+        "monday": 1,
+        "tuesday": 2,
+        "wednesday": 3,
+        "thursday": 4,
+        "friday": 5,
+        "saturday": 6,
+    },
+    "de": {
+        "sonntag": 0,
+        "montag": 1,
+        "dienstag": 2,
+        "mittwoch": 3,
+        "donnerstag": 4,
+        "freitag": 5,
+        "samstag": 6,
+        # Adverbial forms ("montags" = "on Mondays")
+        "sonntags": 0,
+        "montags": 1,
+        "dienstags": 2,
+        "mittwochs": 3,
+        "donnerstags": 4,
+        "freitags": 5,
+        "samstags": 6,
+    },
+    "fr": {
+        "dimanche": 0,
+        "lundi": 1,
+        "mardi": 2,
+        "mercredi": 3,
+        "jeudi": 4,
+        "vendredi": 5,
+        "samedi": 6,
+    },
+    "es": {
+        "domingo": 0,
+        "lunes": 1,
+        "martes": 2,
+        "miércoles": 3,
+        "miercoles": 3,
+        "jueves": 4,
+        "viernes": 5,
+        "sábado": 6,
+        "sabado": 6,
+    },
+    "it": {
+        "domenica": 0,
+        "lunedì": 1,
+        "lunedi": 1,
+        "martedì": 2,
+        "martedi": 2,
+        "mercoledì": 3,
+        "mercoledi": 3,
+        "giovedì": 4,
+        "giovedi": 4,
+        "venerdì": 5,
+        "venerdi": 5,
+        "sabato": 6,
+    },
+    "pt": {
+        "domingo": 0,
+        "segunda": 1,
+        "segunda-feira": 1,
+        "terça": 2,
+        "terça-feira": 2,
+        "terca": 2,
+        "terca-feira": 2,
+        "quarta": 3,
+        "quarta-feira": 3,
+        "quinta": 4,
+        "quinta-feira": 4,
+        "sexta": 5,
+        "sexta-feira": 5,
+        "sábado": 6,
+        "sabado": 6,
+    },
+    "nl": {
+        "zondag": 0,
+        "maandag": 1,
+        "dinsdag": 2,
+        "woensdag": 3,
+        "donderdag": 4,
+        "vrijdag": 5,
+        "zaterdag": 6,
+    },
+    "pl": {
+        "niedziela": 0,
+        "poniedziałek": 1,
+        "poniedzialek": 1,
+        "wtorek": 2,
+        "środa": 3,
+        "sroda": 3,
+        "czwartek": 4,
+        "piątek": 5,
+        "piatek": 5,
+        "sobota": 6,
+    },
+    "tr": {
+        "pazar": 0,
+        "pazartesi": 1,
+        "salı": 2,
+        "sali": 2,
+        "çarşamba": 3,
+        "carsamba": 3,
+        "perşembe": 4,
+        "persembe": 4,
+        "cuma": 5,
+        "cumartesi": 6,
+    },
+    "ru": {
+        "воскресенье": 0,
+        "понедельник": 1,
+        "вторник": 2,
+        "среда": 3,
+        "четверг": 4,
+        "пятница": 5,
+        "суббота": 6,
+    },
+    "uk": {
+        "неділя": 0,
+        "понеділок": 1,
+        "вівторок": 2,
+        "середа": 3,
+        "четвер": 4,
+        "п'ятниця": 5,
+        "субота": 6,
+    },
+    "ga": {  # Irish
+        "domhnach": 0,
+        "luan": 1,
+        "máirt": 2,
+        "mairt": 2,
+        "céadaoin": 3,
+        "ceadaoin": 3,
+        "déardaoin": 4,
+        "deardaoin": 4,
+        "aoine": 5,
+        "satharn": 6,
+        # With "dé" prefix
+        "dé luain": 1,
+        "dé máirt": 2,
+        "dé céadaoin": 3,
+        "dé haoine": 5,
+        "dé sathairn": 6,
+    },
+    "ar": {
+        "الأحد": 0,
+        "الاثنين": 1,
+        "الثلاثاء": 2,
+        "الأربعاء": 3,
+        "الخميس": 4,
+        "الجمعة": 5,
+        "السبت": 6,
+    },
+    "zh": {
+        "星期日": 0,
+        "星期天": 0,
+        "星期一": 1,
+        "星期二": 2,
+        "星期三": 3,
+        "星期四": 4,
+        "星期五": 5,
+        "星期六": 6,
+        "周日": 0,
+        "周一": 1,
+        "周二": 2,
+        "周三": 3,
+        "周四": 4,
+        "周五": 5,
+        "周六": 6,
+    },
+    "ja": {
+        "日曜日": 0,
+        "月曜日": 1,
+        "火曜日": 2,
+        "水曜日": 3,
+        "木曜日": 4,
+        "金曜日": 5,
+        "土曜日": 6,
+        "日曜": 0,
+        "月曜": 1,
+        "火曜": 2,
+        "水曜": 3,
+        "木曜": 4,
+        "金曜": 5,
+        "土曜": 6,
+    },
+    "ko": {
+        "일요일": 0,
+        "월요일": 1,
+        "화요일": 2,
+        "수요일": 3,
+        "목요일": 4,
+        "금요일": 5,
+        "토요일": 6,
+    },
+    "hi": {"रविवार": 0, "सोमवार": 1, "मंगलवार": 2, "बुधवार": 3, "गुरुवार": 4, "शुक्रवार": 5, "शनिवार": 6},
+}
+
+# Flatten into single lookup
+for _lang_days in _DAY_NAMES_BY_LANG.values():
+    _DAY_NAMES.update(_lang_days)
+
+# Multilingual "every" / "each" / "weekly" keywords
+_EVERY_WORDS: set[str] = {
+    # English
+    "every",
+    "each",
+    "weekly",
+    # German
+    "jeden",
+    "jede",
+    "jedes",
+    "wöchentlich",
+    "wochentlich",
+    # French
+    "chaque",
+    "tous les",
+    "hebdomadaire",
+    # Spanish
+    "cada",
+    "todos los",
+    "semanal",
+    # Italian
+    "ogni",
+    "settimanale",
+    # Portuguese
+    "cada",
+    "todo",
+    "toda",
+    "semanal",
+    # Dutch
+    "elke",
+    "iedere",
+    "wekelijks",
+    # Polish
+    "każdy",
+    "kazdy",
+    "każda",
+    "kazda",
+    "co tydzień",
+    # Turkish
+    "her",
+    "haftalık",
+    "haftalik",
+    # Russian
+    "каждый",
+    "каждая",
+    "каждое",
+    "еженедельно",
+    # Ukrainian
+    "кожний",
+    "кожна",
+    "кожне",
+    "щотижня",
+    # Irish
+    "gach",
+    # Arabic
+    "كل",
+    # Chinese
+    "每",
+    "每周",
+    "每個",
+    # Japanese
+    "毎",
+    "毎週",
+    # Korean
+    "매",
+    "매주",
+    # Hindi
+    "हर",
+    "प्रत्येक",
+    "साप्ताहिक",
+}
+
+
+def extract_recurrence(content: str) -> list[int] | None:
+    """Extract recurring day-of-week patterns from content.
+
+    Returns sorted list of day indices (0=Sun..6=Sat) or None.
+    Supports 16 languages via static dictionary lookup.
+    No LLM calls.
+    """
+    content_lower = content.lower()
+    days_found: set[int] = set()
+
+    # Check if content contains an "every" keyword
+    has_every = any(word in content_lower for word in _EVERY_WORDS)
+
+    if not has_every:
+        # German adverbial forms ("montags") imply recurrence without "jeden"
+        for name, idx in _DAY_NAMES.items():
+            if name.endswith("s") and name in _DAY_NAMES_BY_LANG.get("de", {}):
+                if re.search(rf"\b{re.escape(name)}\b", content_lower):
+                    days_found.add(idx)
+        if not days_found:
+            return None
+
+    # Scan for day names in content
+    if not days_found:
+        # Longest names first to avoid partial matches (e.g. "dé luain" before "luan")
+        for name, idx in sorted(_DAY_NAMES.items(), key=lambda x: -len(x[0])):
+            if len(name) < 2:
+                continue
+            # CJK/Arabic/Cyrillic/Devanagari: substring match is fine (no spaces)
+            if name[0].isascii() and name[0].isalpha():
+                # Alphabetic: use word boundary to avoid "vendredi" matching "di"
+                if re.search(rf"\b{re.escape(name)}\b", content_lower):
+                    days_found.add(idx)
+            elif name in content_lower:
+                days_found.add(idx)
+
+    return sorted(days_found) if days_found else None
+
+
 TEMPORAL_KEYWORDS = frozenset(
     {
         "when",
@@ -109,6 +431,333 @@ def has_temporal_intent(query: str) -> bool:
     """Check if a query has temporal intent (when, date, time, etc.)."""
     words = set(query.lower().split())
     return bool(words & TEMPORAL_KEYWORDS)
+
+
+# --- Multi-hop temporal detection + entity extraction ---
+
+_MULTI_HOP_PATTERNS = re.compile(
+    r"how many (?:months?|weeks?|days?|years?) (?:between|since|before|after|passed)"
+    r"|which (?:happened|came|occurred|did I do|event|did I|trip|device|gift|project) .{0,20}first"
+    r"|what (?:is|was) the order"
+    r"|how long (?:between|since|before|after|had passed|did it take)"
+    r"|which .{0,30} (?:earlier|later|before|after)"
+    r"|how (?:old|long) was I when",
+    re.IGNORECASE,
+)
+
+# Pattern to extract entity anchors from "between X and Y" / "first, X or Y" queries
+_BETWEEN_PATTERN = re.compile(
+    r"between\s+(.+?)\s+and\s+(.+?)(?:\s*[?.!]|$)",
+    re.IGNORECASE,
+)
+_OR_PATTERN = re.compile(
+    r"(?:first|earlier|later),?\s+(.+?)\s+or\s+(?:the\s+)?(.+?)(?:\s*[?.!]|$)",
+    re.IGNORECASE,
+)
+_SINCE_PATTERN = re.compile(
+    r"(?:since|after|before)\s+(.+?)(?:\s+(?:did|was|had|have|how|when|$))",
+    re.IGNORECASE,
+)
+# "how many days before X did Y" → extract X and Y
+_BEFORE_DID_PATTERN = re.compile(
+    r"(?:before|after)\s+(.+?)\s+did\s+(?:I\s+)?(.+?)(?:\s*[?.!]|$)",
+    re.IGNORECASE,
+)
+# "how long had I been X when Y" → extract X and Y
+_BEEN_WHEN_PATTERN = re.compile(
+    r"been\s+(.+?)\s+when\s+(?:I\s+)?(.+?)(?:\s*[?.!]|$)",
+    re.IGNORECASE,
+)
+
+
+_ORDERING_PATTERNS = re.compile(
+    r"what is the order of"
+    r"|from earliest to latest"
+    r"|from latest to earliest"
+    r"|in (?:chronological|reverse) order",
+    re.IGNORECASE,
+)
+
+
+def is_ordering_query(query: str) -> bool:
+    """Detect if a query asks for chronological ordering of multiple events."""
+    return bool(_ORDERING_PATTERNS.search(query))
+
+
+def is_multi_hop_temporal(query: str) -> bool:
+    """Detect if a query requires multi-hop temporal reasoning (comparing two events)."""
+    return bool(_MULTI_HOP_PATTERNS.search(query))
+
+
+def extract_query_anchors(query: str) -> list[str]:
+    """Extract entity anchors from a multi-hop temporal query.
+
+    Returns a list of 1-2 noun phrases representing the events being compared.
+    Uses regex patterns -- no LLM or NLP library needed.
+    """
+    anchors = []
+
+    # "between X and Y"
+    match = _BETWEEN_PATTERN.search(query)
+    if match:
+        anchors = [match.group(1).strip(), match.group(2).strip()]
+
+    # "X or Y" (from "which happened first, X or Y")
+    if not anchors:
+        match = _OR_PATTERN.search(query)
+        if match:
+            anchors = [match.group(1).strip(), match.group(2).strip()]
+
+    # "before X did Y" / "after X did Y"
+    if not anchors:
+        match = _BEFORE_DID_PATTERN.search(query)
+        if match:
+            anchors = [match.group(1).strip(), match.group(2).strip()]
+
+    # "been X when Y"
+    if not anchors:
+        match = _BEEN_WHEN_PATTERN.search(query)
+        if match:
+            anchors = [match.group(1).strip(), match.group(2).strip()]
+
+    # "since/after X" (single anchor fallback)
+    if not anchors:
+        match = _SINCE_PATTERN.search(query)
+        if match:
+            anchors = [match.group(1).strip()]
+
+    # Clean up common filler words from anchors
+    cleaned = []
+    for a in anchors:
+        a = re.sub(r"^(?:the|my|a|an|I|i)\s+", "", a, flags=re.IGNORECASE)
+        a = re.sub(r"\s+(?:the|my|a|an)\s+", " ", a, flags=re.IGNORECASE)
+        a = a.strip().rstrip(",.")
+        if len(a) > 2:
+            cleaned.append(a)
+
+    return cleaned
+
+
+# --- Temporal query resolution ---
+
+# Patterns for temporal range phrases ("in January", "last March", "four months ago")
+_MONTH_NAMES = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
+def resolve_temporal_query(
+    query: str,
+    reference_date: datetime | None = None,
+) -> tuple[str, str] | None:
+    """Resolve a temporal query into a date range (start, end) as ISO strings.
+
+    Uses parsedatetime first (free, handles ~80% of cases).
+    Falls back to LLM (GPT-4o-mini via litellm) for complex expressions.
+    Returns None if no temporal range can be resolved.
+    """
+    if reference_date is None:
+        reference_date = datetime.now()
+
+    # Try parsedatetime first
+    result = _resolve_with_parsedatetime(query, reference_date)
+    if result:
+        return result
+
+    # Try month name extraction ("in January", "last March")
+    result = _resolve_month_reference(query, reference_date)
+    if result:
+        return result
+
+    # LLM fallback (optional -- graceful if litellm not installed)
+    if has_temporal_intent(query):
+        result = _resolve_with_llm(query, reference_date)
+        if result:
+            return result
+
+    return None
+
+
+def _resolve_with_parsedatetime(query: str, reference_date: datetime) -> tuple[str, str] | None:
+    """Try parsedatetime for relative date expressions."""
+    # Look for range-like phrases
+    range_patterns = [
+        # "between X and Y"
+        re.compile(r"between\s+(.+?)\s+and\s+(.+?)(?:\s*[?.!]|$)", re.IGNORECASE),
+        # "from X to Y"
+        re.compile(r"from\s+(.+?)\s+to\s+(.+?)(?:\s*[?.!]|$)", re.IGNORECASE),
+    ]
+
+    for pattern in range_patterns:
+        match = pattern.search(query)
+        if match:
+            start_result, start_status = _PDT_CAL.parse(match.group(1), reference_date)
+            end_result, end_status = _PDT_CAL.parse(match.group(2), reference_date)
+            if start_status and end_status:
+                start = datetime(*start_result[:6])
+                end = datetime(*end_result[:6])
+                return (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+
+    # Single point phrases → create a ±window
+    for phrase in _RELATIVE_PHRASES.findall(query):
+        result, status = _PDT_CAL.parse(phrase, reference_date)
+        if status:
+            dt = datetime(*result[:6])
+            # Create a 7-day window around the resolved date
+            from datetime import timedelta as _td
+
+            start = dt - _td(days=3)
+            end = dt + _td(days=4)
+            return (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+
+    # "N months/weeks ago" → create a month/week window
+    _WORD_NUMBERS = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+        "eleven": 11,
+        "twelve": 12,
+        "a": 1,
+        "an": 1,
+    }
+    ago_match = re.search(
+        r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a|an)"
+        r"\s+(months?|weeks?|years?)\s+ago",
+        query,
+        re.IGNORECASE,
+    )
+    if ago_match:
+        raw = ago_match.group(1).lower()
+        num = _WORD_NUMBERS.get(raw, None)
+        if num is None:
+            num = int(raw)
+        unit = ago_match.group(2).lower().rstrip("s")
+        from datetime import timedelta
+
+        if unit == "month":
+            # Approximate: go back N months, create a 30-day window
+            start = reference_date - timedelta(days=num * 30 + 15)
+            end = (
+                reference_date - timedelta(days=(num - 1) * 30 - 15) if num > 1 else reference_date
+            )
+            return (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        elif unit == "week":
+            start = reference_date - timedelta(weeks=num, days=3)
+            end = reference_date - timedelta(weeks=num - 1) if num > 1 else reference_date
+            return (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        elif unit == "year":
+            start = reference_date.replace(year=reference_date.year - num, month=1, day=1)
+            end = reference_date.replace(year=reference_date.year - num, month=12, day=31)
+            return (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+
+    return None
+
+
+def _resolve_month_reference(query: str, reference_date: datetime) -> tuple[str, str] | None:
+    """Resolve 'in January', 'last March', 'this April' to a month range."""
+    query_lower = query.lower()
+
+    for month_name, month_num in _MONTH_NAMES.items():
+        if month_name not in query_lower:
+            continue
+        # Determine the year
+        if "last" in query_lower or "previous" in query_lower:
+            year = reference_date.year - 1
+        elif "next" in query_lower:
+            year = reference_date.year + 1
+        else:
+            # Default: most recent occurrence of that month
+            year = reference_date.year
+            if month_num > reference_date.month:
+                year -= 1
+
+        import calendar
+
+        _, last_day = calendar.monthrange(year, month_num)
+        start = f"{year}-{month_num:02d}-01"
+        end = f"{year}-{month_num:02d}-{last_day:02d}"
+        return (start, end)
+
+    return None
+
+
+def _resolve_with_llm(query: str, reference_date: datetime) -> tuple[str, str] | None:
+    """LLM fallback for complex temporal expressions. Optional -- returns None if unavailable.
+
+    Uses TEMPORAL_LLM_MODEL env var to determine the model. If empty, LLM
+    fallback is disabled (parsedatetime only). Self-hosters can set this to
+    an Ollama model (e.g. "ollama/llama3.2") or any litellm-compatible string.
+    """
+    from ogham.config import settings
+
+    model = settings.temporal_llm_model
+    if not model:
+        logger.debug("TEMPORAL_LLM_MODEL not set, skipping LLM temporal resolution")
+        return None
+
+    try:
+        import litellm
+    except ImportError:
+        logger.debug("litellm not installed, skipping LLM temporal resolution")
+        return None
+
+    try:
+        response = litellm.completion(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        f"Today is {reference_date.strftime('%Y-%m-%d')}. "
+                        "Extract the date range from the user's query. "
+                        'Return ONLY JSON: {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} '
+                        "or null if no date range can be determined."
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            max_tokens=50,
+            temperature=0,
+        )
+        import json
+
+        text = response.choices[0].message.content.strip()
+        data = json.loads(text)
+        if data and "start" in data and "end" in data:
+            return (data["start"], data["end"])
+    except Exception:
+        logger.debug("LLM temporal resolution failed for: %s", query[:60])
+
+    return None
 
 
 # --- Shared regex patterns (used by both importance and entity extraction) ---

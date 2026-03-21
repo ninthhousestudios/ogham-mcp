@@ -103,6 +103,7 @@ class PostgresBackend:
         expires_at: str | None = None,
         importance: float = 0.5,
         surprise: float = 0.5,
+        recurrence_days: list[int] | None = None,
     ) -> dict[str, Any]:
         cols = [
             "content",
@@ -138,6 +139,10 @@ class PostgresBackend:
             cols.append("expires_at")
             vals.append("%(expires_at)s")
             params["expires_at"] = expires_at
+        if recurrence_days is not None:
+            cols.append("recurrence_days")
+            vals.append("%(recurrence_days)s")
+            params["recurrence_days"] = recurrence_days
 
         sql = f"INSERT INTO memories ({', '.join(cols)}) VALUES ({', '.join(vals)}) RETURNING *"
         row = self._execute(sql, params, fetch="one")

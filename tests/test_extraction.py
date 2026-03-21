@@ -205,3 +205,206 @@ def test_extract_entities_empty():
     from ogham.extraction import extract_entities
 
     assert extract_entities("just some lowercase text here") == []
+
+
+# --- Recurrence extraction tests ---
+
+
+def test_recurrence_english_every_monday():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Team standup every Monday at 9am") == [1]
+
+
+def test_recurrence_english_multiple_days():
+    from ogham.extraction import extract_recurrence
+
+    result = extract_recurrence("Sync call every Tuesday and Thursday")
+    assert result == [2, 4]
+
+
+def test_recurrence_english_weekly():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Weekly Friday retrospective") == [5]
+
+
+def test_recurrence_german_jeden():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Jeden Montag haben wir ein Standup") == [1]
+
+
+def test_recurrence_german_adverbial():
+    from ogham.extraction import extract_recurrence
+
+    # "montags" implies recurrence without needing "jeden"
+    assert extract_recurrence("Montags gibt es immer Meetings") == [1]
+
+
+def test_recurrence_french_chaque():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Chaque vendredi, réunion d'équipe") == [5]
+
+
+def test_recurrence_spanish_cada():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Cada lunes tenemos standup") == [1]
+
+
+def test_recurrence_italian_ogni():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Ogni mercoledì riunione di team") == [3]
+
+
+def test_recurrence_dutch_elke():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Elke dinsdag teamoverleg") == [2]
+
+
+def test_recurrence_russian():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Каждый понедельник стендап в 9 утра") == [1]
+
+
+def test_recurrence_chinese():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("每周一开会讨论项目进度") == [1]
+
+
+def test_recurrence_japanese():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("毎週金曜日にレビュー会議") == [5]
+
+
+def test_recurrence_korean():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("매주 월요일 스탠드업 미팅") == [1]
+
+
+def test_recurrence_irish():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Gach Luan bíonn cruinniú againn") == [1]
+
+
+def test_recurrence_arabic():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("كل الاثنين اجتماع الفريق") == [1]
+
+
+def test_recurrence_no_every_keyword():
+    from ogham.extraction import extract_recurrence
+
+    # Day name without "every" should not match
+    assert extract_recurrence("The meeting is on Monday") is None
+
+
+def test_recurrence_no_day_name():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("We meet every week") is None
+
+
+def test_recurrence_portuguese():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Cada segunda-feira temos reunião") == [1]
+
+
+def test_recurrence_turkish():
+    from ogham.extraction import extract_recurrence
+
+    assert extract_recurrence("Her pazartesi toplantı var") == [1]
+
+
+# --- Temporal query resolution tests ---
+
+
+def test_resolve_temporal_months_ago():
+    from datetime import datetime
+
+    from ogham.extraction import resolve_temporal_query
+
+    ref = datetime(2026, 3, 21)
+    result = resolve_temporal_query("What happened four months ago?", ref)
+    assert result is not None
+    start, end = result
+    # 4 months ago from March 21 → around November 2025
+    assert "2025-11" in start or "2025-10" in start
+
+
+def test_resolve_temporal_last_january():
+    from datetime import datetime
+
+    from ogham.extraction import resolve_temporal_query
+
+    ref = datetime(2026, 3, 21)
+    result = resolve_temporal_query("What did I do last January?", ref)
+    assert result is not None
+    start, end = result
+    assert start == "2025-01-01"
+    assert end == "2025-01-31"
+
+
+def test_resolve_temporal_in_march():
+    from datetime import datetime
+
+    from ogham.extraction import resolve_temporal_query
+
+    ref = datetime(2026, 3, 21)
+    result = resolve_temporal_query("What meetings did I have in March?", ref)
+    assert result is not None
+    start, end = result
+    # Current month → this year
+    assert "2026-03" in start
+
+
+def test_resolve_temporal_last_week():
+    from datetime import datetime
+
+    from ogham.extraction import resolve_temporal_query
+
+    ref = datetime(2026, 3, 21)
+    result = resolve_temporal_query("What did we discuss last week?", ref)
+    assert result is not None
+    start, end = result
+    assert "2026-03" in start
+
+
+def test_resolve_temporal_no_temporal():
+    from ogham.extraction import resolve_temporal_query
+
+    result = resolve_temporal_query("Tell me about the project architecture")
+    assert result is None
+
+
+def test_resolve_temporal_two_years_ago():
+    from datetime import datetime
+
+    from ogham.extraction import resolve_temporal_query
+
+    ref = datetime(2026, 3, 21)
+    result = resolve_temporal_query("What was decided two years ago?", ref)
+    assert result is not None
+    start, end = result
+    assert "2024" in start
+
+
+def test_resolve_temporal_graceful_without_llm():
+    """LLM fallback should not crash if litellm is not configured."""
+    from ogham.extraction import resolve_temporal_query
+
+    # Complex query that parsedatetime can't handle -- should return None, not crash
+    result = resolve_temporal_query("the second Thursday of the quarter before last")
+    # May return None (no LLM) or a result (if LLM is available) -- either is fine
+    assert result is None or isinstance(result, tuple)

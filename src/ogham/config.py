@@ -14,13 +14,11 @@ PROVIDER_BATCH_DEFAULTS: dict[str, int] = {
 }
 
 # Default embedding dimensions per provider (used when EMBEDDING_DIM is not set).
-# Most providers default to 512 to match the shipped schema (vector(512)).
-# Mistral is the exception -- mistral-embed only supports 1024.
 PROVIDER_DEFAULT_DIMS: dict[str, int] = {
     "ollama": 512,
-    "openai": 512,
+    "openai": 1024,
     "mistral": 1024,
-    "voyage": 512,
+    "voyage": 1024,
 }
 
 
@@ -56,6 +54,12 @@ class Settings(BaseSettings):
 
     embedding_cache_max_size: int = 10000
     embedding_cache_dir: str | None = None
+
+    # Temporal LLM fallback: model for resolving complex date expressions.
+    # Empty = parsedatetime only (no LLM calls). Set to an Ollama model name
+    # (e.g. "llama3.2") for local LLM, or "gpt-4o-mini" for OpenAI, or any
+    # litellm-compatible model string. Requires litellm installed.
+    temporal_llm_model: str = ""
 
     bare_postgrest: bool = False
 

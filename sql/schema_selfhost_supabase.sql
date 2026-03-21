@@ -24,8 +24,15 @@ create table if not exists memories (
     surprise float not null default 0.5,
     compression_level integer not null default 0,
     original_content text,
+    occurrence_period tstzrange,
+    recurrence_days int[],
     fts tsvector generated always as (to_tsvector('english', content)) stored
 );
+
+-- lz4 TOAST compression for text columns (faster decompress than default pglz)
+alter table memories alter column content set compression lz4;
+alter table memories alter column original_content set compression lz4;
+alter table memories alter column metadata set compression lz4;
 
 -- Enable RLS (service role key bypasses; ready for multi-user later)
 alter table memories enable row level security;
@@ -40,7 +47,7 @@ create policy "Deny anon access" on memories
 
 -- HNSW index for fast cosine similarity search
 create index if not exists memories_embedding_idx
-    on memories using hnsw (embedding vector_cosine_ops)
+    on memories using hnsw ((embedding::halfvec(512)) halfvec_cosine_ops)
     with (m = 16, ef_construction = 64);
 
 -- GIN indexes for filtering
@@ -57,6 +64,12 @@ create index if not exists memories_source_idx on memories (source);
 -- Partial index for expiration queries
 create index if not exists memories_expires_at_idx on memories (expires_at)
     where expires_at is not null;
+
+-- Temporal indexes (calendar/timeline)
+create index if not exists idx_memories_occurrence on memories using gist (occurrence_period)
+    where occurrence_period is not null;
+create index if not exists idx_memories_recurrence on memories using gin (recurrence_days)
+    where recurrence_days is not null;
 
 -- Profile settings table for TTL configuration
 create table if not exists profile_settings (
@@ -132,13 +145,13 @@ SECURITY INVOKER
 SET search_path = public, extensions
 AS $$
     WITH candidates AS (
-        SELECT m.id, (1 - (m.embedding <=> new_embedding))::float AS similarity
+        SELECT m.id, (1 - (m.embedding::halfvec(512) <=> new_embedding::halfvec(512)))::float AS similarity
         FROM memories m
         WHERE m.id != new_memory_id
           AND m.profile = filter_profile
           AND (m.expires_at IS NULL OR m.expires_at > now())
-          AND 1 - (m.embedding <=> new_embedding) > link_threshold
-        ORDER BY m.embedding <=> new_embedding
+          AND 1 - (m.embedding::halfvec(512) <=> new_embedding::halfvec(512)) > link_threshold
+        ORDER BY m.embedding::halfvec(512) <=> new_embedding::halfvec(512)
         LIMIT max_links
     ),
     inserted AS (
@@ -289,13 +302,13 @@ begin
         m.source,
         m.profile,
         m.tags,
-        (1 - (m.embedding <=> query_embedding))::float as similarity,
+        (1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512)))::float as similarity,
         -- Relevance = similarity * softplus(ACT-R) * confidence * graph_boost
         -- ACT-R: B(M) = ln(n+1) - 0.5 * ln(ageDays / (n+1))
         -- softplus: ln(1 + exp(B)) keeps score positive
         -- graph_boost: (1 + sum(relationship_strength) * 0.2)
         (
-            (1 - (m.embedding <=> query_embedding)) *
+            (1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512))) *
             ln(1.0 + exp(
                 ln(m.access_count + 1.0) -
                 0.5 * ln(
@@ -320,7 +333,7 @@ begin
         where r.target_id = m.id or r.source_id = m.id
     ) g on true
     where
-        1 - (m.embedding <=> query_embedding) > match_threshold
+        1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512)) > match_threshold
         and (filter_tags is null or m.tags && filter_tags)
         and (filter_source is null or m.source = filter_source)
         and m.profile = filter_profile
@@ -365,14 +378,14 @@ as $$
 with semantic as (
     select
         m.id,
-        row_number() over (order by m.embedding <=> query_embedding) as rank_ix,
-        (1 - (m.embedding <=> query_embedding))::float as similarity
+        row_number() over (order by m.embedding::halfvec(512) <=> query_embedding::halfvec(512)) as rank_ix,
+        (1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512)))::float as similarity
     from memories m
     where m.profile = filter_profile
       and (filter_tags is null or m.tags && filter_tags)
       and (filter_source is null or m.source = filter_source)
       and (m.expires_at is null or m.expires_at > now())
-    order by m.embedding <=> query_embedding
+    order by m.embedding::halfvec(512) <=> query_embedding::halfvec(512)
     limit match_count * 2
 ),
 keyword as (
@@ -553,7 +566,7 @@ begin
             select 1 from memories m
             where m.profile = filter_profile
               and (m.expires_at is null or m.expires_at > now())
-              and 1 - (m.embedding <=> query_embeddings[i]) > match_threshold
+              and 1 - (m.embedding::halfvec(512) <=> query_embeddings[i]::halfvec(512)) > match_threshold
             limit 1
         ) into found;
         results := array_append(results, found);

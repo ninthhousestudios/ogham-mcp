@@ -66,6 +66,7 @@ def store_memory(
     expires_at: str | None = None,
     importance: float = 0.5,
     surprise: float = 0.5,
+    recurrence_days: list[int] | None = None,
 ) -> dict[str, Any]:
     return get_backend().store_memory(
         content,
@@ -77,6 +78,7 @@ def store_memory(
         expires_at,
         importance=importance,
         surprise=surprise,
+        recurrence_days=recurrence_days,
     )
 
 

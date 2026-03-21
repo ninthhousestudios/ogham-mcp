@@ -23,6 +23,7 @@ class DatabaseBackend(Protocol):
         source: str | None = None,
         tags: list[str] | None = None,
         expires_at: str | None = None,
+        recurrence_days: list[int] | None = None,
     ) -> dict[str, Any]: ...
 
     def store_memories_batch(

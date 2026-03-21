@@ -57,6 +57,7 @@ class GatewayBackend:
         expires_at: str | None = None,
         importance: float = 0.5,
         surprise: float = 0.5,
+        recurrence_days: list[int] | None = None,
     ) -> dict[str, Any]:
         # Gateway handles embedding + scoring server-side
         return self._post(
