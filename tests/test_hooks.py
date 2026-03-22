@@ -250,10 +250,10 @@ def test_session_start_handles_errors():
     assert result == ""
 
 
-def test_mask_secrets():
+def test_mask_secrets_key_value():
     from ogham.hooks import _mask_secrets
 
-    # API keys
+    # API keys with assignment
     assert "***MASKED***" in _mask_secrets("api_key=sk-proj-abc123def456")
     assert "sk-proj-abc123def456" not in _mask_secrets("api_key=sk-proj-abc123def456")
 
@@ -261,9 +261,50 @@ def test_mask_secrets():
     assert "***MASKED***" in _mask_secrets("password=mysecretpass123")
     assert "mysecretpass123" not in _mask_secrets("password=mysecretpass123")
 
-    # Safe content passes through
+    # Database URLs
+    assert "***MASKED***" in _mask_secrets("database_url=postgresql://user:pass@host/db")
+
+    # Env vars
+    assert "***MASKED***" in _mask_secrets("VOYAGE_API_KEY=pa-TKy5ucfpkIp99_lU1JaxlblJxl7pNTldP")
+    assert "***MASKED***" in _mask_secrets("OPENAI_API_KEY=sk-proj-joiu0bp96xKIxxxxxxx")
+
+
+def test_mask_secrets_bare_tokens():
+    from ogham.hooks import _mask_secrets
+
+    # GitHub PAT (bare, no KEY=)
+    assert "***MASKED***" in _mask_secrets("ghp_ABCDEFghijklmnopqrstuvwxyz1234567890")
+
+    # AWS access key
+    assert "***MASKED***" in _mask_secrets("AKIA1234567890ABCDEF")
+
+    # Slack token
+    assert "***MASKED***" in _mask_secrets(
+        "xoxb-123456789012-1234567890123-abcdefghijklmnopqrstuvwx"
+    )
+
+    # Anthropic key
+    assert "***MASKED***" in _mask_secrets("sk-ant-api03-abc123def456ghi789jkl")
+
+    # SendGrid
+    assert "***MASKED***" in _mask_secrets("SG.abcdefghijklmnopqrstuvwxyz1234567890")
+
+
+def test_mask_secrets_url_credentials():
+    from ogham.hooks import _mask_secrets
+
+    masked = _mask_secrets("postgresql://admin:s3cretP4ss@db.example.com:5432/mydb")
+    assert "s3cretP4ss" not in masked
+    assert "***MASKED***" in masked
+
+
+def test_mask_secrets_safe_content():
+    from ogham.hooks import _mask_secrets
+
     assert _mask_secrets("deployed to railway") == "deployed to railway"
     assert _mask_secrets("git commit -m 'fix bug'") == "git commit -m 'fix bug'"
+    assert _mask_secrets("Kevin Burns worked on Ogham") == "Kevin Burns worked on Ogham"
+    assert _mask_secrets("ls -la /tmp/foo") == "ls -la /tmp/foo"
 
 
 def test_post_tool_masks_secrets_before_storing():

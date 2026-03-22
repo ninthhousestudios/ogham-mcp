@@ -161,23 +161,66 @@ _GIT_NOISE = frozenset(
     }
 )
 
-# Patterns that look like secrets -- mask these before storing
+# Patterns that look like secrets -- mask these before storing.
+# Two-tier approach:
+# 1. _SECRET_PATTERNS: matches KEY=VALUE patterns (api_key=sk-proj-...)
+# 2. _BARE_SECRET_PATTERNS: matches bare tokens without assignment (ghp_..., AKIA...)
+# 3. _URL_CREDENTIALS: matches user:pass@host in URLs
+# 4. _ENV_SECRET_KEYS: generic KEY=value matching for common env var names
+
 _SECRET_PATTERNS = re.compile(
     r"(?i)"
-    r"(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token"
-    r"|password|passwd|bearer|sk[_-]live|sk[_-]proj|pk[_-]live"
+    # Generic key=value patterns
+    r"(?:api[_-]?key|secret[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token"
+    r"|password|passwd|bearer|token"
+    # Cloud provider prefixes
+    r"|sk[_-]live|sk[_-]proj|pk[_-]live|sk[_-]test|pk[_-]test"
+    # Service-specific prefixes
     r"|ghp_|gho_|github_pat_|glpat-|xoxb-|xoxp-|whsec_"
-    r"|sb_secret_|ogham_live_|pa-[A-Za-z0-9_-]{20}"
+    r"|sb_secret_|ogham_live_"
+    r"|SG\.[A-Za-z0-9_-]{20}"  # SendGrid
+    r"|npm_[A-Za-z0-9]{20}"  # NPM
+    r"|pypi-[A-Za-z0-9]{20}"  # PyPI
+    # Voyage/Neon/custom
+    r"|pa-[A-Za-z0-9_-]{20}"
     r"|npg_[A-Za-z0-9]{10}"
-    r"|AKIA[A-Z0-9]{16}"  # AWS access key
-    r"|eyJ[A-Za-z0-9_-]{20,})"  # JWT tokens
+    # AWS
+    r"|AKIA[A-Z0-9]{16}"
+    # JWT
+    r"|eyJ[A-Za-z0-9_-]{20,})"
     r"[=:\s]+\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
 )
+
+# Bare tokens that don't need a KEY= prefix to be recognised
+_BARE_SECRET_PATTERNS = re.compile(
+    r"(?:"
+    r"ghp_[A-Za-z0-9]{36}"  # GitHub PAT
+    r"|gho_[A-Za-z0-9]{36}"  # GitHub OAuth
+    r"|github_pat_[A-Za-z0-9_]{20,}"  # GitHub fine-grained PAT
+    r"|glpat-[A-Za-z0-9\-]{20,}"  # GitLab PAT
+    r"|AKIA[A-Z0-9]{16}"  # AWS access key
+    r"|SG\.[A-Za-z0-9_\-]{20,}"  # SendGrid
+    r"|xox[bpars]-[A-Za-z0-9\-]{10,}"  # Slack tokens
+    r"|sk-ant-[A-Za-z0-9\-]{20,}"  # Anthropic
+    r"|sk-proj-[A-Za-z0-9\-]{20,}"  # OpenAI project
+    r"|sk-[A-Za-z0-9]{40,}"  # OpenAI legacy
+    r"|npm_[A-Za-z0-9]{36}"  # NPM
+    r"|pypi-[A-Za-z0-9]{20,}"  # PyPI
+    r"|whsec_[A-Za-z0-9]{20,}"  # Webhook secret (Clerk/Svix)
+    r"|ogham_live_[A-Za-z0-9_\-]{20,}"  # Ogham API key
+    r"|\d{8,12}:[A-Za-z0-9_-]{35}"  # Telegram bot token
+    r"|[A-Za-z0-9]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}"  # Discord bot token
+    r")"
+)
+
+# Basic auth in URLs: user:pass@host
+_URL_CREDENTIALS = re.compile(r"://([^:]+):([^@]{3,})@")
 
 _ENV_SECRET_KEYS = frozenset(
     {
         "api_key",
         "secret_key",
+        "access_key",
         "access_token",
         "auth_token",
         "password",
@@ -187,6 +230,12 @@ _ENV_SECRET_KEYS = frozenset(
         "database_url",
         "connection_string",
         "dsn",
+        "redis_url",
+        "valkey_url",
+        "mongodb_uri",
+        "encryption_key",
+        "signing_key",
+        "webhook_secret",
     }
 )
 
@@ -197,13 +246,24 @@ _SUMMARY_FIELDS = ("command", "content", "query", "file_path", "url", "message")
 def _mask_secrets(text: str) -> str:
     """Replace anything that looks like a secret with a masked placeholder.
 
+    Three detection layers:
+    1. KEY=value patterns (api_key=sk-proj-...)
+    2. Bare tokens without assignment (ghp_..., AKIA..., sk-ant-...)
+    3. URL credentials (user:pass@host)
+    4. Generic env var names (password=, database_url=)
+
     Captures the event ("set API key for Stripe") but never the value.
     """
+    # Layer 1: KEY=value patterns
     masked = _SECRET_PATTERNS.sub(
         lambda m: m.group(0)[: m.start(1) - m.start(0)] + "***MASKED***",
         text,
     )
-    # Also mask common env var patterns: KEY=value
+    # Layer 2: Bare tokens (no KEY= prefix needed)
+    masked = _BARE_SECRET_PATTERNS.sub("***MASKED***", masked)
+    # Layer 3: URL credentials (user:pass@host)
+    masked = _URL_CREDENTIALS.sub("://***MASKED***:***MASKED***@", masked)
+    # Layer 4: Generic env var names
     for key in _ENV_SECRET_KEYS:
         pattern = re.compile(rf"(?i){re.escape(key)}\s*[=:]\s*['\"]?([^\s'\"]+)['\"]?")
         masked = pattern.sub(
