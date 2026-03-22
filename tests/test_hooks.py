@@ -1,0 +1,295 @@
+"""Tests for lifecycle hooks."""
+
+from unittest.mock import patch
+
+
+def test_session_start_returns_context():
+    from ogham.hooks import session_start
+
+    mock_results = [
+        {
+            "content": "Decided to use PostgreSQL",
+            "tags": ["type:decision"],
+            "similarity": 0.8,
+            "created_at": "2026-03-20T10:00:00Z",
+        },
+        {
+            "content": "psycopg needs check=check_connection",
+            "tags": ["type:gotcha"],
+            "similarity": 0.7,
+            "created_at": "2026-03-19T10:00:00Z",
+        },
+    ]
+    with (
+        patch("ogham.database.hybrid_search_memories", return_value=mock_results),
+        patch("ogham.embeddings.generate_embedding", return_value=[0.1] * 512),
+    ):
+        result = session_start(cwd="/Users/dev/myproject", profile="work")
+
+    assert "Decided to use PostgreSQL" in result
+    assert "psycopg" in result
+    assert "## Session Context" in result
+    assert "2 memories loaded" in result
+
+
+def test_session_start_empty_db():
+    from ogham.hooks import session_start
+
+    with (
+        patch("ogham.database.hybrid_search_memories", return_value=[]),
+        patch("ogham.embeddings.generate_embedding", return_value=[0.1] * 512),
+    ):
+        result = session_start(cwd="/tmp/empty", profile="work")
+
+    assert result == ""
+
+
+def test_post_tool_stores_action():
+    from ogham.hooks import post_tool
+
+    hook_input = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -m 'fix: update config'"},
+        "session_id": "abc123",
+        "cwd": "/Users/dev/myproject",
+    }
+    with patch("ogham.service.store_memory_enriched") as mock_store:
+        post_tool(hook_input, profile="work")
+
+    mock_store.assert_called_once()
+    content = mock_store.call_args.kwargs["content"]
+    assert "Bash" in content
+    assert "git commit" in content
+
+
+def test_post_tool_skips_ogham_tools():
+    from ogham.hooks import post_tool
+
+    for tool_name in [
+        "mcp__ogham__hybrid_search",
+        "mcp__ogham__store_memory",
+        "ogham_search",
+        "store_memory",
+        "hybrid_search",
+    ]:
+        with patch("ogham.service.store_memory_enriched") as mock_store:
+            post_tool(
+                {"tool_name": tool_name, "tool_input": {"query": "test"}},
+                profile="work",
+            )
+        mock_store.assert_not_called(), f"{tool_name} should be skipped"
+
+
+def test_post_tool_captures_high_value_tools():
+    """Write, Edit, Agent, WebFetch are always captured."""
+    from ogham.hooks import post_tool
+
+    for tool_name in ["Write", "Edit", "Agent", "WebFetch"]:
+        with patch("ogham.service.store_memory_enriched") as mock_store:
+            post_tool(
+                {
+                    "tool_name": tool_name,
+                    "tool_input": {"content": "some content"},
+                    "cwd": "/tmp",
+                    "session_id": "s1",
+                },
+                profile="work",
+            )
+        mock_store.assert_called_once(), f"{tool_name} should be captured"
+
+
+def test_post_tool_skips_noise_bash():
+    """ls, cat, pwd etc. should not be captured."""
+    from ogham.hooks import post_tool
+
+    for cmd in ["ls", "pwd", "cat foo.txt", "head -5 bar", "echo hello"]:
+        with patch("ogham.service.store_memory_enriched") as mock_store:
+            post_tool(
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": cmd},
+                    "cwd": "/tmp",
+                    "session_id": "s1",
+                },
+                profile="work",
+            )
+        mock_store.assert_not_called(), f"'{cmd}' should be skipped as noise"
+
+
+def test_post_tool_captures_signal_bash():
+    """Bash commands with signal keywords should be captured."""
+    from ogham.hooks import post_tool
+
+    for cmd in [
+        "git commit -m 'fix bug'",
+        "docker build -t myapp .",
+        "pytest tests/ -v",
+        "railway deploy",
+    ]:
+        with patch("ogham.service.store_memory_enriched") as mock_store:
+            post_tool(
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": cmd},
+                    "cwd": "/tmp",
+                    "session_id": "s1",
+                },
+                profile="work",
+            )
+        mock_store.assert_called_once(), f"'{cmd}' should be captured as signal"
+
+
+def test_post_tool_skips_routine_without_signal():
+    """Read/Grep without signal keywords should be skipped."""
+    from ogham.hooks import post_tool
+
+    with patch("ogham.service.store_memory_enriched") as mock_store:
+        post_tool(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": "/tmp/readme.md"},
+                "cwd": "/tmp",
+                "session_id": "s1",
+            },
+            profile="work",
+        )
+    mock_store.assert_not_called()
+
+
+def test_post_tool_captures_routine_with_signal():
+    """Read/Grep with error keywords should be captured."""
+    from ogham.hooks import post_tool
+
+    with patch("ogham.service.store_memory_enriched") as mock_store:
+        post_tool(
+            {
+                "tool_name": "Grep",
+                "tool_input": {"command": "grep error logs/deploy.log"},
+                "cwd": "/tmp",
+                "session_id": "s1",
+            },
+            profile="work",
+        )
+    mock_store.assert_called_once()
+
+
+def test_post_tool_tags_include_tool_name():
+    from ogham.hooks import post_tool
+
+    with patch("ogham.service.store_memory_enriched") as mock_store:
+        post_tool(
+            {
+                "tool_name": "Write",
+                "tool_input": {"content": "new file content"},
+                "cwd": "/tmp",
+                "session_id": "s1",
+            },
+            profile="work",
+        )
+
+    tags = mock_store.call_args.kwargs["tags"]
+    assert "tool:Write" in tags
+    assert "type:action" in tags
+    assert "session:s1" in tags
+
+
+def test_pre_compact_stores_summary():
+    from ogham.hooks import pre_compact
+
+    with patch("ogham.service.store_memory_enriched") as mock_store:
+        pre_compact(session_id="abc", cwd="/Users/dev/myproject", profile="work")
+
+    mock_store.assert_called_once()
+    content = mock_store.call_args.kwargs["content"]
+    assert "myproject" in content
+    assert "abc" in content
+    tags = mock_store.call_args.kwargs["tags"]
+    assert "compaction:drain" in tags
+
+
+def test_post_compact_returns_context():
+    from ogham.hooks import post_compact
+
+    mock_results = [
+        {
+            "content": "API uses REST with JWT",
+            "tags": ["type:architecture"],
+            "similarity": 0.9,
+            "created_at": "2026-03-20T10:00:00Z",
+        },
+    ]
+    with (
+        patch("ogham.database.hybrid_search_memories", return_value=mock_results),
+        patch("ogham.embeddings.generate_embedding", return_value=[0.1] * 512),
+    ):
+        result = post_compact(cwd="/Users/dev/myproject", profile="work")
+
+    assert "API uses REST" in result
+    assert "## Restored Context" in result
+    assert "1 memories restored" in result
+
+
+def test_post_compact_empty_db():
+    from ogham.hooks import post_compact
+
+    with (
+        patch("ogham.database.hybrid_search_memories", return_value=[]),
+        patch("ogham.embeddings.generate_embedding", return_value=[0.1] * 512),
+    ):
+        result = post_compact(cwd="/tmp/empty", profile="work")
+
+    assert result == ""
+
+
+def test_session_start_handles_errors():
+    from ogham.hooks import session_start
+
+    with patch("ogham.embeddings.generate_embedding", side_effect=RuntimeError("no provider")):
+        result = session_start(cwd="/tmp", profile="work")
+
+    assert result == ""
+
+
+def test_mask_secrets():
+    from ogham.hooks import _mask_secrets
+
+    # API keys
+    assert "***MASKED***" in _mask_secrets("api_key=sk-proj-abc123def456")
+    assert "sk-proj-abc123def456" not in _mask_secrets("api_key=sk-proj-abc123def456")
+
+    # Passwords
+    assert "***MASKED***" in _mask_secrets("password=mysecretpass123")
+    assert "mysecretpass123" not in _mask_secrets("password=mysecretpass123")
+
+    # Safe content passes through
+    assert _mask_secrets("deployed to railway") == "deployed to railway"
+    assert _mask_secrets("git commit -m 'fix bug'") == "git commit -m 'fix bug'"
+
+
+def test_post_tool_masks_secrets_before_storing():
+    from ogham.hooks import post_tool
+
+    with patch("ogham.service.store_memory_enriched") as mock_store:
+        post_tool(
+            {
+                "tool_name": "Write",
+                "tool_input": {"content": "api_key=sk-proj-abc123def456ghi"},
+                "cwd": "/tmp",
+                "session_id": "s1",
+            },
+            profile="work",
+        )
+
+    content = mock_store.call_args.kwargs["content"]
+    assert "sk-proj-abc123def456ghi" not in content
+    assert "***MASKED***" in content
+
+
+def test_post_tool_handles_errors():
+    from ogham.hooks import post_tool
+
+    with patch("ogham.service.store_memory_enriched", side_effect=RuntimeError("db down")):
+        post_tool(
+            {"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": "/tmp"},
+            profile="work",
+        )

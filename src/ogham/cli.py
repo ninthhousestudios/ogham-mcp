@@ -367,6 +367,16 @@ def openapi(
     console.print(f"[green]OpenAPI spec written to {output}[/green]")
 
 
+def _register_subcommands():
+    """Register sub-command groups (lazy to avoid import-time overhead)."""
+    from ogham.hooks_cli import hooks_app
+
+    app.add_typer(hooks_app)
+
+
+_register_subcommands()
+
+
 def main():
     try:
         app()
