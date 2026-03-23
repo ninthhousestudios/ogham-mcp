@@ -22,8 +22,27 @@ PROVIDER_DEFAULT_DIMS: dict[str, int] = {
 }
 
 
+def _find_env_files() -> tuple[str, ...]:
+    """Find env files: project .env first, then ~/.ogham/config.env as fallback."""
+    from pathlib import Path
+
+    files = []
+    # Project-level .env (highest priority)
+    if Path(".env").exists():
+        files.append(".env")
+    # Global fallback
+    global_env = Path.home() / ".ogham" / "config.env"
+    if global_env.exists():
+        files.append(str(global_env))
+    return tuple(files) if files else (".env",)
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_find_env_files(),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     database_backend: str = "supabase"
     database_url: str | None = None
