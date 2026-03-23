@@ -212,10 +212,8 @@ ogham export -o backup.json     # Export memories
 ogham import backup.json        # Import memories
 ogham cleanup                   # Remove expired memories
 ogham hooks install             # Auto-detect client + configure hooks
-ogham hooks session-start       # Inject project context (piped from stdin)
-ogham hooks post-tool           # Capture tool activity (piped from stdin)
-ogham hooks inscribe            # Save session context before compaction
-ogham hooks recall              # Restore context after compaction
+ogham hooks recall              # Read from the stone (load project context)
+ogham hooks inscribe            # Carve into the stone (capture activity)
 ogham serve                     # Start MCP server (stdio, default)
 ogham serve --transport sse     # Start SSE server on port 8742
 ogham openapi                   # Generate OpenAPI spec
@@ -283,16 +281,14 @@ ogham hooks install
 
 | Client | What gets installed |
 |--------|-------------------|
-| Claude Code | 4 hooks in `~/.claude/settings.json` (SessionStart, PostToolUse, PreCompact, PostCompact) |
-| Kiro | Instructions for Hook UI setup (session start + post tool) |
+| Claude Code | Hooks in `~/.claude/settings.json` (recall on SessionStart/PostCompact, inscribe on PostToolUse/PreCompact) |
+| Kiro | Instructions for Hook UI (recall on Prompt Submit, inscribe on Agent Stop) |
 | Codex, Cursor, others | Project instruction file (CLAUDE.md, AGENTS.md, or .cursorrules) |
 
-**What the hooks do:**
+**Two commands, named after the Ogham stones:**
 
-- **session-start** -- searches Ogham for memories relevant to your project directory, injects them as context
-- **post-tool** -- captures meaningful tool executions as memories. Skips noise (`ls`, `cat`, `git status`) and only stores signal (commits, deploys, errors, config changes). Secrets are masked before storing.
-- **inscribe** -- saves session context to Ogham before Claude compacts the conversation
-- **recall** -- restores relevant memories after compaction so context isn't lost
+- **recall** -- read from the stone. Searches Ogham for memories relevant to your project and injects them as context. Fires at session start and after compaction.
+- **inscribe** -- carve into the stone. Captures meaningful tool activity as memories. Skips noise (`ls`, `cat`, `git status`) and only stores signal (commits, deploys, errors, config changes). Fires after tool use and before compaction. Secrets are masked before storing.
 
 **Smart filtering:** Hooks don't capture everything. Routine commands (`ls`, `pwd`, `git add`) are skipped. Only signal events (errors, deployments, commits, config changes) are stored -- typically 20-30 memories per session instead of hundreds.
 
