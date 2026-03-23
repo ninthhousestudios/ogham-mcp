@@ -49,6 +49,11 @@ def store_memory_enriched(
 
     _require_content(content)
 
+    # Mask secrets before storing (protects all paths: hooks, MCP tools, gateway, CLI)
+    from ogham.hooks import _mask_secrets
+
+    content = _mask_secrets(content)
+
     # Auto-extract dates into metadata
     dates = extract_dates(content)
     if dates:
