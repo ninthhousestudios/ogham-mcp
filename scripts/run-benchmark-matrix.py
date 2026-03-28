@@ -169,10 +169,14 @@ def main():
     )
     args = parser.parse_args()
 
-    # Memory cap
+    # Memory cap — use RLIMIT_DATA instead of RLIMIT_AS to avoid killing
+    # ONNX runtime's mmap allocations (AS counts virtual space, DATA is heap only)
     mem_bytes = args.mem_limit_gb * 1024 * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-    log.info("Memory limit set to %d GB", args.mem_limit_gb)
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA, (mem_bytes, mem_bytes))
+        log.info("Memory limit (RLIMIT_DATA) set to %d GB", args.mem_limit_gb)
+    except (ValueError, OSError) as e:
+        log.warning("Could not set memory limit: %s (continuing without limit)", e)
 
     # Load benchmark env
     env_file = Path(__file__).parent.parent / "benchmarks" / ".env.local"

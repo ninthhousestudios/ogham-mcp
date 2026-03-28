@@ -42,8 +42,8 @@ fi
 
 echo "=== Step 5: Clone/update ogham-mcp ==="
 if [ ! -d "${REPO_DIR}" ]; then
-    # Clone the repo — update the URL to your fork/repo
-    git clone https://github.com/ogham-mcp/ogham-mcp.git "${REPO_DIR}"
+    # Clone from the fork that has the colbert-reembed branch
+    git clone https://github.com/ninthhousestudios/ogham-mcp.git "${REPO_DIR}"
 fi
 cd "${REPO_DIR}"
 git checkout worktree-colbert-reembed 2>/dev/null || git checkout main
@@ -55,6 +55,7 @@ uv sync --all-extras
 echo "=== Step 7: Configure environment ==="
 cat > benchmarks/.env.local << 'ENVEOF'
 EMBEDDING_PROVIDER=onnx
+DATABASE_BACKEND=postgres
 DATABASE_URL=postgresql://postgres@localhost/ogham
 ENVEOF
 
@@ -69,17 +70,23 @@ snapshot_download('yuniko-software/bge-m3-onnx', local_dir='${MODEL_DIR}')
 "
 fi
 
-echo "=== Step 9: Restore database dump ==="
-if [ -f "${DUMP_FILE}" ]; then
-    echo "Restoring from ${DUMP_FILE}..."
-    # Create table structure first
-    uv run python -c "
-import os; os.environ.setdefault('DATABASE_URL', 'postgresql://postgres@localhost/ogham')
+echo "=== Step 9: Create table structure + add all columns ==="
+uv run python -c "
+import os
+os.environ.setdefault('DATABASE_URL', 'postgresql://postgres@localhost/ogham')
+os.environ.setdefault('DATABASE_BACKEND', 'postgres')
+os.environ.setdefault('EMBEDDING_PROVIDER', 'onnx')
 from ogham.database import get_backend
 b = get_backend()
-print(f'Backend ready, checking memories table...')
-# The get_backend call should auto-create/migrate the table
+print('Backend ready, table auto-migrated')
+# Add colbert_vectors_raw BEFORE restore so the dump data can populate it
+b._execute('ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_vectors_raw bytea', fetch='none')
+print('colbert_vectors_raw column ready')
 "
+
+echo "=== Step 10: Restore database dump ==="
+if [ -f "${DUMP_FILE}" ]; then
+    echo "Restoring from ${DUMP_FILE}..."
     su - postgres -c "pg_restore -d ogham --data-only --no-owner ${DUMP_FILE}" || {
         echo "pg_restore failed, trying with --clean..."
         su - postgres -c "pg_restore -d ogham --clean --no-owner ${DUMP_FILE}" || true
@@ -89,14 +96,19 @@ else
     echo "Copy it from laptop: scp ogham-memories.dump root@<host>:/workspace/"
 fi
 
-echo "=== Step 10: Add colbert_vectors_raw column ==="
-su - postgres -c "psql ogham -c 'ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_vectors_raw bytea'"
-
 echo "=== Step 11: Embed remaining profiles with raw f32 ColBERT ==="
 cd "${REPO_DIR}"
+# Export env vars for all subsequent Python scripts
+export DATABASE_URL="postgresql://postgres@localhost/ogham"
+export DATABASE_BACKEND="postgres"
+export EMBEDDING_PROVIDER="onnx"
+
 echo "Checking which profiles need raw f32 embedding..."
 uv run python -c "
-import os; os.environ.setdefault('DATABASE_URL', 'postgresql://postgres@localhost/ogham')
+import os
+os.environ.setdefault('DATABASE_URL', 'postgresql://postgres@localhost/ogham')
+os.environ.setdefault('DATABASE_BACKEND', 'postgres')
+os.environ.setdefault('EMBEDDING_PROVIDER', 'onnx')
 from ogham.database import get_backend
 b = get_backend()
 rows = b._execute('''
