@@ -47,6 +47,7 @@ import json
 import logging
 import math
 import os
+import resource
 import sys
 import time
 from pathlib import Path
@@ -307,6 +308,66 @@ def ingest_bucket(
 # ---------------------------------------------------------------------------
 
 
+def _colbert_rerank(results, query_colbert_vecs, colbert_column, backend, blend_weight=0.3):
+    """Rerank search results using ColBERT MaxSim.
+
+    Fetches ColBERT vectors from the specified column, computes MaxSim
+    against query vectors, blends with existing relevance score, re-sorts.
+
+    Args:
+        results: list of search result dicts (must have 'id' and 'relevance')
+        query_colbert_vecs: [n_q, dim] float32 numpy array (unpooled query tokens)
+        colbert_column: 'colbert_vectors' (pooled f16) or 'colbert_vectors_raw' (unpooled f32)
+        backend: database backend for fetching colbert bytes
+        blend_weight: weight for MaxSim score in final blend (0.3 = 30% ColBERT)
+
+    Returns: re-sorted results list with 'colbert_score' added.
+    """
+    from ogham.onnx_embedder import maxsim, unpack_colbert_any
+
+    if not results:
+        return results
+
+    memory_ids = [str(r["id"]) for r in results]
+    rows = backend._execute(
+        f"SELECT id, {colbert_column} FROM memories"
+        f" WHERE id = ANY(%(ids)s) AND {colbert_column} IS NOT NULL",
+        {"ids": memory_ids},
+        fetch="all",
+    )
+    colbert_map = {str(row["id"]): bytes(row[colbert_column]) for row in rows}
+
+    has_colbert = []
+    no_colbert = []
+    for r in results:
+        mid = str(r["id"])
+        colbert_bytes = colbert_map.get(mid)
+        if colbert_bytes is not None:
+            doc_vecs = unpack_colbert_any(colbert_bytes)
+            r["colbert_score"] = maxsim(query_colbert_vecs, doc_vecs)
+            has_colbert.append(r)
+        else:
+            r["colbert_score"] = None
+            no_colbert.append(r)
+
+    if has_colbert:
+        hybrid_scores = [r["relevance"] for r in has_colbert]
+        colbert_scores = [r["colbert_score"] for r in has_colbert]
+        h_min, h_max = min(hybrid_scores), max(hybrid_scores)
+        c_min, c_max = min(colbert_scores), max(colbert_scores)
+        h_range = h_max - h_min or 1.0
+        c_range = c_max - c_min or 1.0
+
+        for r in has_colbert:
+            h_norm = (r["relevance"] - h_min) / h_range
+            c_norm = (r["colbert_score"] - c_min) / c_range
+            r["relevance"] = (1.0 - blend_weight) * h_norm + blend_weight * c_norm
+
+        has_colbert.sort(key=lambda r: r["relevance"], reverse=True)
+
+    return has_colbert + no_colbert
+
+
 def evaluate_question(
     question: dict,
     category: str,
@@ -316,23 +377,48 @@ def evaluate_question(
     top_k: int = 10,
     search_mode: str = "tsvector",
     query_sparse: str | None = None,
+    query_colbert_vecs=None,
 ) -> dict:
     """Evaluate a single probing question against stored memories.
 
     Returns metrics dict with recall, MRR, NDCG, plus question metadata.
+
+    search_mode can be:
+      - 'tsvector': dense + FTS (original)
+      - 'sparse': dense + neural sparse
+      - 'colbert_pooled': dense + sparse + ColBERT rerank (pooled f16)
+      - 'colbert_raw': dense + sparse + ColBERT rerank (raw f32)
     """
     from ogham.service import search_memories_enriched
 
     query = question["question"]
+
+    # For ColBERT modes, fetch more candidates for reranking
+    fetch_limit = max(top_k, 50)
+    if search_mode.startswith("colbert"):
+        fetch_limit = max(top_k * 3, 50)
+
+    t0 = time.time()
     results = _with_retry(
         search_memories_enriched,
         query=query,
         profile=profile,
-        limit=max(top_k, 50),
+        limit=fetch_limit,
         embedding=query_embedding,
-        search_mode=search_mode,
-        query_sparse=query_sparse,
     )
+    search_ms = (time.time() - t0) * 1000
+
+    # ColBERT reranking
+    rerank_ms = 0.0
+    if search_mode.startswith("colbert") and query_colbert_vecs is not None and results:
+        t1 = time.time()
+        from ogham.database import get_backend
+        backend = get_backend()
+        colbert_column = (
+            "colbert_vectors" if search_mode == "colbert_pooled" else "colbert_vectors_raw"
+        )
+        results = _colbert_rerank(results, query_colbert_vecs, colbert_column, backend)
+        rerank_ms = (time.time() - t1) * 1000
 
     # Gold answer: source_chat_ids field tells us which chat IDs contain the answer
     # For single-chat eval, the gold is the current chat_id if it has source_chat_ids
@@ -410,6 +496,9 @@ def evaluate_question(
         "gold_ids": sorted(gold_msg_set),
         "gold_count": len(gold_msg_set),
         "retrieved_count": len(results),
+        "search_ms": round(search_ms, 1),
+        "rerank_ms": round(rerank_ms, 1),
+        "total_ms": round(search_ms + rerank_ms, 1),
     }
 
 
@@ -420,10 +509,14 @@ def evaluate_bucket(
     categories: list[str] | None = None,
     top_k: int = 10,
     search_mode: str = "tsvector",
+    *,
+    cached_embeddings: dict | None = None,
 ) -> dict:
     """Run evaluation across all chats and categories in a bucket.
 
-    Pre-batches all query embeddings for efficiency.
+    Pre-batches all query embeddings for efficiency. If cached_embeddings is
+    provided (dict with 'dense', 'sparse', 'colbert', 'questions' keys),
+    skips re-encoding and reuses them.
     """
     from ogham.embeddings import generate_embeddings_batch
 
@@ -457,23 +550,43 @@ def evaluate_bucket(
         logger.warning("No questions found")
         return {}
 
-    # Pre-batch all query embeddings (1000 at a time with Voyage)
     query_texts = [q[2]["question"] for q in all_questions]
-    logger.info("Pre-embedding %d queries (batch_size=%s)...", len(query_texts), EMBEDDING_BATCH_SIZE)
-    query_embeddings = _with_retry(
-        generate_embeddings_batch, query_texts, batch_size=EMBEDDING_BATCH_SIZE
-    )
-    logger.info("Query embeddings ready")
 
-    # Generate sparse query vectors if in sparse mode
-    query_sparse_literals: list[str | None] = [None] * len(query_texts)
-    if search_mode == "sparse":
-        from sparse_embeddings import generate_sparse_vectors, sparse_to_sparsevec_literal
+    # Use cached embeddings if provided, otherwise compute fresh
+    if cached_embeddings is not None:
+        logger.info("Using cached query embeddings (%d queries)", len(query_texts))
+        query_embeddings = cached_embeddings["dense"]
+        query_sparse_literals = cached_embeddings.get("sparse", [None] * len(query_texts))
+        query_colbert_list = cached_embeddings.get("colbert", [None] * len(query_texts))
+    else:
+        # Pre-batch all query embeddings
+        logger.info("Pre-embedding %d queries (batch_size=%s)...", len(query_texts), EMBEDDING_BATCH_SIZE)
+        query_embeddings = _with_retry(
+            generate_embeddings_batch, query_texts, batch_size=EMBEDDING_BATCH_SIZE
+        )
+        logger.info("Query embeddings ready")
 
-        logger.info("Generating sparse query vectors via FlagEmbedding...")
-        sparse_vecs = generate_sparse_vectors(query_texts, batch_size=EMBEDDING_BATCH_SIZE)
-        query_sparse_literals = [sparse_to_sparsevec_literal(sv) for sv in sparse_vecs]
-        logger.info("Sparse query vectors ready")
+        # Generate sparse query vectors if in sparse mode
+        query_sparse_literals: list[str | None] = [None] * len(query_texts)
+        if search_mode == "sparse":
+            from sparse_embeddings import generate_sparse_vectors, sparse_to_sparsevec_literal
+
+            logger.info("Generating sparse query vectors via FlagEmbedding...")
+            sparse_vecs = generate_sparse_vectors(query_texts, batch_size=EMBEDDING_BATCH_SIZE)
+            query_sparse_literals = [sparse_to_sparsevec_literal(sv) for sv in sparse_vecs]
+            logger.info("Sparse query vectors ready")
+
+        # Generate ColBERT query vectors if in ColBERT mode
+        query_colbert_list: list = [None] * len(query_texts)
+        if search_mode.startswith("colbert"):
+            from ogham.onnx_embedder import encode_query_colbert
+
+            logger.info("Generating ColBERT query vectors for %d queries...", len(query_texts))
+            for i, qt in enumerate(query_texts):
+                query_colbert_list[i] = encode_query_colbert(qt)
+                if (i + 1) % 50 == 0:
+                    logger.info("  ColBERT query %d/%d", i + 1, len(query_texts))
+            logger.info("ColBERT query vectors ready")
 
     # Evaluate each question
     all_metrics = []
@@ -495,6 +608,7 @@ def evaluate_bucket(
             metrics = evaluate_question(
                 question, cat, chat_id, profile, query_embeddings[i], top_k,
                 search_mode=search_mode, query_sparse=query_sparse_literals[i],
+                query_colbert_vecs=query_colbert_list[i],
             )
             all_metrics.append(metrics)
             category_metrics.setdefault(cat, []).append(metrics)
@@ -546,12 +660,32 @@ def evaluate_bucket(
             "count": len(mlist),
         }
 
+    # Latency stats
+    latency = {}
+    if all_metrics and "total_ms" in all_metrics[0]:
+        search_times = [m["search_ms"] for m in all_metrics]
+        rerank_times = [m["rerank_ms"] for m in all_metrics]
+        total_times = [m["total_ms"] for m in all_metrics]
+        latency = {
+            "search_ms_avg": round(sum(search_times) / len(search_times), 1),
+            "search_ms_p50": round(sorted(search_times)[len(search_times) // 2], 1),
+            "search_ms_p95": round(sorted(search_times)[int(len(search_times) * 0.95)], 1),
+            "rerank_ms_avg": round(sum(rerank_times) / len(rerank_times), 1),
+            "rerank_ms_p50": round(sorted(rerank_times)[len(rerank_times) // 2], 1),
+            "rerank_ms_p95": round(sorted(rerank_times)[int(len(rerank_times) * 0.95)], 1),
+            "total_ms_avg": round(sum(total_times) / len(total_times), 1),
+            "total_ms_p50": round(sorted(total_times)[len(total_times) // 2], 1),
+            "total_ms_p95": round(sorted(total_times)[int(len(total_times) * 0.95)], 1),
+        }
+
     results_summary = {
         "bucket": bucket,
+        "search_mode": search_mode,
         "categories_evaluated": eval_categories,
         "questions_evaluated": len(all_metrics),
         "elapsed_seconds": round(elapsed, 1),
         "overall": avg,
+        "latency": latency,
         "per_category": cat_avgs,
         "per_difficulty": diff_avgs,
         "per_question": all_metrics,
@@ -559,7 +693,7 @@ def evaluate_bucket(
 
     # Print summary
     print("\n" + "=" * 70)
-    print(f"BEAM Benchmark Results -- {bucket}")
+    print(f"BEAM Benchmark Results -- {bucket} ({search_mode})")
     print("=" * 70)
     print(f"Questions: {len(all_metrics)}")
     print(f"Time: {elapsed:.0f}s")
@@ -584,6 +718,12 @@ def evaluate_bucket(
             f"  {diff:15s}  R@10={davg['recall@10']:.4f}"
             f"  MRR={davg['mrr']:.4f}  (n={davg['count']})"
         )
+    if latency:
+        print()
+        print("Latency (ms):")
+        print(f"  Search:  avg={latency['search_ms_avg']:.0f}  p50={latency['search_ms_p50']:.0f}  p95={latency['search_ms_p95']:.0f}")
+        print(f"  Rerank:  avg={latency['rerank_ms_avg']:.0f}  p50={latency['rerank_ms_p50']:.0f}  p95={latency['rerank_ms_p95']:.0f}")
+        print(f"  Total:   avg={latency['total_ms_avg']:.0f}  p50={latency['total_ms_p50']:.0f}  p95={latency['total_ms_p95']:.0f}")
 
     # Save results
     RESULTS_DIR.mkdir(exist_ok=True)
@@ -712,63 +852,97 @@ def backfill_sparse_bucket(bucket: str, chat_ids: list[int] | None = None, batch
 
 
 def compare_results(bucket: str):
-    """Compare tsvector vs sparse eval results side-by-side."""
-    tsvector_file = RESULTS_DIR / f"eval_{bucket}_all.json"
-    sparse_file = RESULTS_DIR / f"eval_{bucket}_all_sparse.json"
+    """Compare all available eval results side-by-side."""
+    modes = ["tsvector", "sparse", "colbert_pooled", "colbert_raw"]
+    loaded = {}
+    for mode in modes:
+        suffix = f"_{mode}" if mode != "tsvector" else ""
+        result_file = RESULTS_DIR / f"eval_{bucket}_all{suffix}.json"
+        if result_file.exists():
+            with open(result_file) as f:
+                loaded[mode] = json.load(f)
 
-    if not tsvector_file.exists():
-        print(f"Missing tsvector results: {tsvector_file}")
+    if len(loaded) < 2:
+        print(f"Need at least 2 result files to compare. Found: {list(loaded.keys())}")
+        print(f"Run --eval with different --search-mode values first.")
         return
-    if not sparse_file.exists():
-        print(f"Missing sparse results: {sparse_file}")
-        return
 
-    with open(tsvector_file) as f:
-        tv = json.load(f)
-    with open(sparse_file) as f:
-        sp = json.load(f)
+    mode_names = list(loaded.keys())
+    baseline = mode_names[0]
 
-    print("\n" + "=" * 80)
-    print(f"BEAM A/B Comparison -- {bucket}: tsvector vs neural sparse")
-    print("=" * 80)
+    print("\n" + "=" * 90)
+    print(f"BEAM Benchmark Comparison -- {bucket}")
+    print("=" * 90)
 
-    # Overall
+    # Overall metrics
     print("\nOverall:")
-    print(f"  {'Metric':<12s}  {'tsvector':>10s}  {'sparse':>10s}  {'delta':>10s}")
-    print(f"  {'-'*12}  {'-'*10}  {'-'*10}  {'-'*10}")
-    for metric in ["recall@5", "recall@10", "recall@20", "recall@50", "ndcg@10", "mrr"]:
-        tv_val = tv["overall"][metric]
-        sp_val = sp["overall"][metric]
-        delta = sp_val - tv_val
-        sign = "+" if delta >= 0 else ""
-        print(f"  {metric:<12s}  {tv_val:10.4f}  {sp_val:10.4f}  {sign}{delta:9.4f}")
+    header = f"  {'Metric':<12s}"
+    for mode in mode_names:
+        header += f"  {mode:>14s}"
+    print(header)
+    print(f"  {'-'*12}" + f"  {'-'*14}" * len(mode_names))
 
-    # Per category
+    for metric in ["recall@5", "recall@10", "recall@20", "recall@50", "ndcg@10", "mrr"]:
+        line = f"  {metric:<12s}"
+        base_val = loaded[baseline]["overall"][metric]
+        for mode in mode_names:
+            val = loaded[mode]["overall"][metric]
+            if mode == baseline:
+                line += f"  {val:14.4f}"
+            else:
+                delta = val - base_val
+                sign = "+" if delta >= 0 else ""
+                line += f"  {val:.4f}({sign}{delta:.3f})"
+        print(line)
+
+    # Per category R@10
     print("\nPer category (R@10):")
-    print(f"  {'Category':<30s}  {'tsvector':>10s}  {'sparse':>10s}  {'delta':>10s}  {'n':>4s}")
-    print(f"  {'-'*30}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*4}")
+    header = f"  {'Category':<30s}"
+    for mode in mode_names:
+        header += f"  {mode:>14s}"
+    header += f"  {'n':>4s}"
+    print(header)
+    print(f"  {'-'*30}" + f"  {'-'*14}" * len(mode_names) + f"  {'-'*4}")
+
     for cat in ALL_CATEGORIES:
-        tv_cat = tv["per_category"].get(cat, {})
-        sp_cat = sp["per_category"].get(cat, {})
-        tv_r10 = tv_cat.get("recall@10", 0)
-        sp_r10 = sp_cat.get("recall@10", 0)
-        delta = sp_r10 - tv_r10
-        sign = "+" if delta >= 0 else ""
-        n = tv_cat.get("count", 0)
-        print(f"  {cat:<30s}  {tv_r10:10.4f}  {sp_r10:10.4f}  {sign}{delta:9.4f}  {n:4d}")
+        line = f"  {cat:<30s}"
+        base_cat = loaded[baseline]["per_category"].get(cat, {})
+        base_val = base_cat.get("recall@10", 0)
+        n = base_cat.get("count", 0)
+        for mode in mode_names:
+            cat_data = loaded[mode]["per_category"].get(cat, {})
+            val = cat_data.get("recall@10", 0)
+            if mode == baseline:
+                line += f"  {val:14.4f}"
+            else:
+                delta = val - base_val
+                sign = "+" if delta >= 0 else ""
+                line += f"  {val:.4f}({sign}{delta:.3f})"
+        line += f"  {n:4d}"
+        print(line)
 
     # Per category MRR
     print("\nPer category (MRR):")
-    print(f"  {'Category':<30s}  {'tsvector':>10s}  {'sparse':>10s}  {'delta':>10s}")
-    print(f"  {'-'*30}  {'-'*10}  {'-'*10}  {'-'*10}")
+    header = f"  {'Category':<30s}"
+    for mode in mode_names:
+        header += f"  {mode:>14s}"
+    print(header)
+    print(f"  {'-'*30}" + f"  {'-'*14}" * len(mode_names))
+
     for cat in ALL_CATEGORIES:
-        tv_cat = tv["per_category"].get(cat, {})
-        sp_cat = sp["per_category"].get(cat, {})
-        tv_mrr = tv_cat.get("mrr", 0)
-        sp_mrr = sp_cat.get("mrr", 0)
-        delta = sp_mrr - tv_mrr
-        sign = "+" if delta >= 0 else ""
-        print(f"  {cat:<30s}  {tv_mrr:10.4f}  {sp_mrr:10.4f}  {sign}{delta:9.4f}")
+        line = f"  {cat:<30s}"
+        base_cat = loaded[baseline]["per_category"].get(cat, {})
+        base_val = base_cat.get("mrr", 0)
+        for mode in mode_names:
+            cat_data = loaded[mode]["per_category"].get(cat, {})
+            val = cat_data.get("mrr", 0)
+            if mode == baseline:
+                line += f"  {val:14.4f}"
+            else:
+                delta = val - base_val
+                sign = "+" if delta >= 0 else ""
+                line += f"  {val:.4f}({sign}{delta:.3f})"
+        print(line)
 
 
 # ---------------------------------------------------------------------------
@@ -776,7 +950,15 @@ def compare_results(bucket: str):
 # ---------------------------------------------------------------------------
 
 
+_MEM_LIMIT_GB = int(os.environ.get("BEAM_MEM_LIMIT_GB", "8"))
+
+
 def main():
+    # Cap virtual memory to prevent OOM-killing the whole system
+    mem_bytes = _MEM_LIMIT_GB * 1024 * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+    logger.info("Memory limit set to %d GB", _MEM_LIMIT_GB)
+
     parser = argparse.ArgumentParser(
         description="BEAM benchmark for Ogham MCP",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -836,8 +1018,8 @@ Examples:
     parser.add_argument(
         "--search-mode",
         default="tsvector",
-        choices=["tsvector", "sparse"],
-        help="Search mode for eval (default: tsvector)",
+        choices=["tsvector", "sparse", "colbert_pooled", "colbert_raw"],
+        help="Search mode for eval (default: tsvector). colbert_pooled/colbert_raw add ColBERT reranking.",
     )
     parser.add_argument(
         "--beam-dir",

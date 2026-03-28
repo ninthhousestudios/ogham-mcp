@@ -400,25 +400,31 @@ def generate_embeddings_batch_full(
     texts: list[str],
     batch_size: int | None = None,
     on_progress: callable = None,
-) -> list[tuple[list[float], str | None]]:
-    """Generate (dense, sparse_sparsevec) for multiple texts.
+    *,
+    include_colbert: bool = False,
+) -> list[tuple[list[float], str | None, bytes | None]]:
+    """Generate (dense, sparse_sparsevec, colbert_bytes) for multiple texts.
 
-    For ONNX: returns sparse strings. For others: sparse is None.
+    For ONNX: returns sparse strings and optional colbert bytes.
+    For others: sparse and colbert are None.
     """
     if batch_size is None:
         batch_size = settings.embedding_batch_size
     provider = settings.embedding_provider
     total = len(texts)
-    results: list[tuple[list[float], str | None] | None] = [None] * total
+    results: list[tuple[list[float], str | None, bytes | None] | None] = [None] * total
     uncached: list[tuple[int, str, str]] = []  # (index, cache_key, text)
 
+    # ColBERT vectors are too large to cache, so only use cache for dense+sparse
     for i, text in enumerate(texts):
         cache_key = _cache_key(text)
-        cached_full = _cache.get_full(cache_key)
-        if cached_full is not None:
-            results[i] = cached_full
-        else:
-            uncached.append((i, cache_key, text))
+        if not include_colbert:
+            cached_full = _cache.get_full(cache_key)
+            if cached_full is not None:
+                dense, sparse = cached_full
+                results[i] = (dense, sparse, None)
+                continue
+        uncached.append((i, cache_key, text))
 
     cached_count = total - len(uncached)
     embedded = cached_count
@@ -432,17 +438,19 @@ def generate_embeddings_batch_full(
         if provider == "onnx":
             from ogham.onnx_embedder import encode_batch, sparse_to_sparsevec
 
-            onnx_results = encode_batch(batch_texts, settings.onnx_model_path or None)
+            onnx_results = encode_batch(
+                batch_texts, settings.onnx_model_path or None, include_colbert=include_colbert
+            )
             for (idx, cache_key, _), oresult in zip(batch, onnx_results):
                 _validate_dim(oresult.dense)
                 sparse_str = sparse_to_sparsevec(oresult.sparse)
                 _cache.put(cache_key, oresult.dense, sparse=sparse_str)
-                results[idx] = (oresult.dense, sparse_str)
+                results[idx] = (oresult.dense, sparse_str, oresult.colbert)
         else:
             embeddings = _generate_batch_uncached(batch_texts)
             for (idx, cache_key, _), emb in zip(batch, embeddings):
                 _cache.put(cache_key, emb)
-                results[idx] = (emb, None)
+                results[idx] = (emb, None, None)
 
         embedded += len(batch)
         if on_progress:

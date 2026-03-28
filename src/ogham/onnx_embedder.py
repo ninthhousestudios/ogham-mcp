@@ -1,6 +1,6 @@
 """ONNX BGE-M3 embedding provider.
 
-Produces dense + sparse vectors in a single model pass using the
+Produces dense + sparse + ColBERT vectors in a single model pass using the
 yuniko-software/bge-m3-onnx model with HuggingFace's `tokenizers` library.
 
 All heavy imports (onnxruntime, tokenizers, numpy) are lazy — this module
@@ -10,6 +10,7 @@ is safe to import even when the ONNX deps aren't installed.
 from __future__ import annotations
 
 import logging
+import struct
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ class OnnxResult:
 
     dense: list[float]
     sparse: dict[int, float]
+    colbert: bytes | None = None  # packed float32: 8-byte header (n_tokens, dim) + data
 
 
 # ── Singleton model holder ────────────────────────────────────────────
@@ -85,8 +87,8 @@ def _get_model(model_path: str | None = None):
 # ── Encoding ──────────────────────────────────────────────────────────
 
 
-def encode(text: str, model_path: str | None = None) -> OnnxResult:
-    """Encode a single text, returning dense + sparse vectors."""
+def encode(text: str, model_path: str | None = None, *, include_colbert: bool = False) -> OnnxResult:
+    """Encode a single text, returning dense + sparse + optional ColBERT vectors."""
     import numpy as np
 
     tokenizer, session = _get_model(model_path)
@@ -95,10 +97,8 @@ def encode(text: str, model_path: str | None = None) -> OnnxResult:
     input_ids = np.array([encoded.ids], dtype=np.int64)
     attention_mask = np.array([encoded.attention_mask], dtype=np.int64)
 
-    dense_embeddings, sparse_weights = session.run(
-        ["dense_embeddings", "sparse_weights"],
-        {"input_ids": input_ids, "attention_mask": attention_mask},
-    )
+    outputs = session.run(None, {"input_ids": input_ids, "attention_mask": attention_mask})
+    dense_embeddings, sparse_weights, colbert_vectors = outputs
 
     # Dense: already L2-normalized by the model export
     dense = dense_embeddings[0].tolist()
@@ -111,20 +111,314 @@ def encode(text: str, model_path: str | None = None) -> OnnxResult:
             if weight > 0:
                 sparse[token_id] = max(sparse.get(token_id, 0), weight)
 
-    return OnnxResult(dense=dense, sparse=sparse)
+    # ColBERT: per-token vectors — the ONNX export already excludes one
+    # special token position, so take the full output as-is
+    colbert_bytes = None
+    if include_colbert:
+        token_vecs = colbert_vectors[0].astype(np.float32)
+        colbert_bytes = pack_colbert(token_vecs)
+
+    return OnnxResult(dense=dense, sparse=sparse, colbert=colbert_bytes)
 
 
-def encode_batch(texts: list[str], model_path: str | None = None) -> list[OnnxResult]:
+def encode_batch(
+    texts: list[str], model_path: str | None = None, *, include_colbert: bool = False
+) -> list[OnnxResult]:
     """Encode multiple texts sequentially.
 
     We disable padding and loop instead of batching because sparse weight
     extraction needs per-token attention masks without padding noise.
     Batching with padding would inflate sparse weights for pad positions.
     """
-    return [encode(text, model_path) for text in texts]
+    return [encode(text, model_path, include_colbert=include_colbert) for text in texts]
 
 
 # ── Sparse format conversion ─────────────────────────────────────────
+
+
+# ── ColBERT format conversion ─────────────────────────────────────
+
+
+_DEFAULT_POOL_FACTOR = 2
+
+
+def pool_colbert(token_vectors, pool_factor: int = _DEFAULT_POOL_FACTOR):
+    """Compress ColBERT token vectors via hierarchical clustering + mean pooling.
+
+    Clusters similar token vectors within a document using Ward's linkage on
+    cosine distances, then averages vectors within each cluster. A pool_factor
+    of N reduces token count to ceil(n_tokens / N).
+
+    Based on Answer.AI's ColBERT Token Pooling research:
+    - Factor 2: 100.6% of baseline quality (slight improvement)
+    - Factor 3: 99% of baseline
+    - Factor 4: 97% of baseline
+
+    Returns pooled [n_clusters, dim] array.
+    """
+    import numpy as np
+    from scipy.cluster.hierarchy import fcluster, linkage
+    from scipy.spatial.distance import squareform
+
+    n_tokens, dim = token_vectors.shape
+    max_clusters = max(1, n_tokens // pool_factor)
+
+    if n_tokens <= max_clusters:
+        return token_vectors
+
+    # Cosine distance matrix
+    norms = np.linalg.norm(token_vectors, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-8)
+    normed = token_vectors / norms
+    sim = normed @ normed.T
+    np.clip(sim, -1, 1, out=sim)
+    dist = 1 - sim
+
+    # Convert to condensed form for scipy
+    np.fill_diagonal(dist, 0)
+    condensed = squareform(dist, checks=False)
+    # Ward's linkage needs non-negative distances
+    np.maximum(condensed, 0, out=condensed)
+
+    Z = linkage(condensed, method="ward")
+    labels = fcluster(Z, t=max_clusters, criterion="maxclust")
+
+    # Mean-pool within clusters
+    pooled = np.zeros((max_clusters, dim), dtype=token_vectors.dtype)
+    for c in range(1, max_clusters + 1):
+        mask = labels == c
+        if mask.any():
+            pooled[c - 1] = token_vectors[mask].mean(axis=0)
+
+    return pooled
+
+
+def pack_colbert(token_vectors, pool_factor: int = _DEFAULT_POOL_FACTOR) -> bytes:
+    """Pool and pack ColBERT vectors into bytes using float16.
+
+    Applies token pooling (hierarchical clustering + mean pool) to reduce
+    vector count by pool_factor, then stores as float16.
+
+    Format: 4-byte n_tokens (uint32) + 4-byte dim (uint32) + flat float16 data.
+    """
+    import numpy as np
+
+    pooled = pool_colbert(token_vectors, pool_factor)
+    n_tokens, dim = pooled.shape
+    return struct.pack("II", n_tokens, dim) + pooled.astype(np.float16).tobytes()
+
+
+def pack_colbert_raw(token_vectors) -> bytes:
+    """Pack ColBERT vectors WITHOUT pooling, stored as float32.
+
+    For benchmarking: preserves full token-level detail for quality comparison
+    against pooled float16. Much larger (~8x) than pack_colbert().
+
+    Format: 4-byte n_tokens (uint32) + 4-byte dim (uint32) + flat float32 data.
+    """
+    import numpy as np
+
+    vecs = token_vectors.astype(np.float32)
+    n_tokens, dim = vecs.shape
+    return struct.pack("II", n_tokens, dim) + vecs.tobytes()
+
+
+def unpack_colbert(data: bytes):
+    """Unpack bytes into a [n_tokens, dim] float32 numpy array.
+
+    Detects float16 vs float32 format from data size and upscales float16
+    to float32 for computation.
+    """
+    import numpy as np
+
+    n_tokens, dim = struct.unpack("II", data[:8])
+    expected_f16 = n_tokens * dim * 2
+    expected_f32 = n_tokens * dim * 4
+    payload = data[8:]
+
+    if len(payload) == expected_f16:
+        return np.frombuffer(payload, dtype=np.float16).reshape(n_tokens, dim).astype(np.float32)
+    elif len(payload) == expected_f32:
+        return np.frombuffer(payload, dtype=np.float32).reshape(n_tokens, dim)
+    else:
+        raise ValueError(
+            f"ColBERT payload size {len(payload)} doesn't match "
+            f"float16 ({expected_f16}) or float32 ({expected_f32}) "
+            f"for shape ({n_tokens}, {dim})"
+        )
+
+
+def pack_colbert_int8_row(token_vectors) -> bytes:
+    """Pack ColBERT vectors as int8 with per-row scale factors.
+
+    Each token vector gets its own scale: scale_i = max(|row_i|) / 127.
+    Quantized value = round(value / scale), clamped to [-127, 127].
+    Caller is responsible for pooling first if desired.
+
+    Format: 4-byte n_tokens + 4-byte dim + 1-byte tag (0x02) +
+            n_tokens × float32 scales + n_tokens × dim × int8 data.
+    """
+    import numpy as np
+
+    vecs = token_vectors.astype(np.float32)
+    n_tokens, dim = vecs.shape
+
+    # Per-row scale factors
+    row_max = np.max(np.abs(vecs), axis=1)
+    scales = np.maximum(row_max / 127.0, 1e-8).astype(np.float32)
+
+    # Quantize
+    quantized = np.round(vecs / scales[:, None]).clip(-127, 127).astype(np.int8)
+
+    header = struct.pack("IIB", n_tokens, dim, 0x02)
+    return header + scales.tobytes() + quantized.tobytes()
+
+
+def pack_colbert_int8_channel(token_vectors) -> bytes:
+    """Pack ColBERT vectors as int8 with per-channel (per-dimension) scale factors.
+
+    Each dimension gets its own scale: scale_j = max(|col_j|) / 127.
+    Better fidelity when dimensions have varying magnitudes.
+    Caller is responsible for pooling first if desired.
+
+    Format: 4-byte n_tokens + 4-byte dim + 1-byte tag (0x03) +
+            dim × float32 scales + n_tokens × dim × int8 data.
+    """
+    import numpy as np
+
+    vecs = token_vectors.astype(np.float32)
+    n_tokens, dim = vecs.shape
+
+    # Per-channel scale factors
+    col_max = np.max(np.abs(vecs), axis=0)
+    scales = np.maximum(col_max / 127.0, 1e-8).astype(np.float32)
+
+    # Quantize
+    quantized = np.round(vecs / scales[None, :]).clip(-127, 127).astype(np.int8)
+
+    header = struct.pack("IIB", n_tokens, dim, 0x03)
+    return header + scales.tobytes() + quantized.tobytes()
+
+
+def unpack_colbert_int8_row(data: bytes):
+    """Unpack int8 per-row quantized ColBERT vectors to float32."""
+    import numpy as np
+
+    n_tokens, dim, tag = struct.unpack("IIB", data[:9])
+    payload = data[9:]
+
+    scales_size = n_tokens * 4
+    scales = np.frombuffer(payload[:scales_size], dtype=np.float32)
+    quantized = np.frombuffer(payload[scales_size:], dtype=np.int8).reshape(n_tokens, dim)
+
+    return quantized.astype(np.float32) * scales[:, None]
+
+
+def unpack_colbert_int8_channel(data: bytes):
+    """Unpack int8 per-channel quantized ColBERT vectors to float32."""
+    import numpy as np
+
+    n_tokens, dim, tag = struct.unpack("IIB", data[:9])
+    payload = data[9:]
+
+    scales_size = dim * 4
+    scales = np.frombuffer(payload[:scales_size], dtype=np.float32)
+    quantized = np.frombuffer(payload[scales_size:], dtype=np.int8).reshape(n_tokens, dim)
+
+    return quantized.astype(np.float32) * scales[None, :]
+
+
+def unpack_colbert_any(data: bytes):
+    """Auto-detect format and unpack ColBERT vectors to float32.
+
+    Handles all formats: f32 (raw), f16 (pooled), int8-row (tag 0x02),
+    int8-channel (tag 0x03).
+
+    Detection uses both the tag byte AND expected payload size to avoid
+    false positives — byte 8 in legacy f16 data is a float16 value that
+    could coincidentally equal 0x02 or 0x03.
+
+    Returns: numpy array [n_tokens, dim] float32.
+    """
+    if len(data) >= 9:
+        n_tokens, dim, tag = struct.unpack("IIB", data[:9])
+        if tag == 0x02:
+            expected = 9 + n_tokens * 4 + n_tokens * dim  # scales + int8 data
+            if len(data) == expected:
+                return unpack_colbert_int8_row(data)
+        elif tag == 0x03:
+            expected = 9 + dim * 4 + n_tokens * dim  # scales + int8 data
+            if len(data) == expected:
+                return unpack_colbert_int8_channel(data)
+
+    # Fall through to legacy 8-byte header (f16/f32 size detection)
+    return unpack_colbert(data)
+
+
+def repack_colbert(raw_f32_vectors, pool_factor: int, precision: str) -> bytes:
+    """One-stop function: pool at factor N, pack at precision P.
+
+    Args:
+        raw_f32_vectors: [n_tokens, dim] float32 array (unpooled source of truth).
+        pool_factor: Token reduction factor (1 = no pooling).
+        precision: One of 'f32', 'f16', 'int8_row', 'int8_channel'.
+
+    Returns: Packed bytes ready for DB storage.
+    """
+    import numpy as np
+
+    pooled = pool_colbert(raw_f32_vectors, pool_factor) if pool_factor > 1 else raw_f32_vectors.astype(np.float32)
+
+    if precision == "f32":
+        return pack_colbert_raw(pooled)
+    elif precision == "f16":
+        n_tokens, dim = pooled.shape
+        return struct.pack("II", n_tokens, dim) + pooled.astype(np.float16).tobytes()
+    elif precision == "int8_row":
+        return pack_colbert_int8_row(pooled)
+    elif precision == "int8_channel":
+        return pack_colbert_int8_channel(pooled)
+    else:
+        raise ValueError(f"Unknown precision: {precision!r}. Use 'f32', 'f16', 'int8_row', or 'int8_channel'.")
+
+
+# ── MaxSim scoring ───────────────────────────────────────────────
+
+
+def maxsim(query_vectors, doc_vectors) -> float:
+    """ColBERT MaxSim: for each query token, find max similarity to any doc token, sum.
+
+    Args:
+        query_vectors: [n_q, dim] float32 — unpooled query token vectors.
+        doc_vectors: [n_d, dim] float32 — pooled (or raw) document token vectors.
+
+    Returns:
+        Scalar MaxSim score (higher = more relevant).
+    """
+    sim = query_vectors @ doc_vectors.T  # [n_q, n_d]
+    return float(sim.max(axis=1).sum())
+
+
+def encode_query_colbert(text: str, model_path: str | None = None):
+    """Encode query text, returning unpooled ColBERT token vectors as float32.
+
+    Queries are short (~20-30 tokens) so no pooling needed — unpooled gives
+    finer-grained matching against pooled document tokens.
+
+    Returns: numpy array [n_tokens, dim] float32.
+    """
+    import numpy as np
+
+    tokenizer, session = _get_model(model_path)
+    encoded = tokenizer.encode(text)
+    input_ids = np.array([encoded.ids], dtype=np.int64)
+    attention_mask = np.array([encoded.attention_mask], dtype=np.int64)
+    outputs = session.run(None, {"input_ids": input_ids, "attention_mask": attention_mask})
+    colbert_vectors = outputs[2]  # [1, n_tokens, dim]
+    return colbert_vectors[0].astype(np.float32)
+
+
+# ── Sparse format conversion ─────────────────────────────────────
 
 
 def sparse_to_sparsevec(sparse: dict[int, float], dim: int = VOCAB_SIZE) -> str:

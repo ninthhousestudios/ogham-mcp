@@ -76,6 +76,8 @@ class PostgresBackend:
             # v0.8.0: temporal columns
             "ALTER TABLE memories ADD COLUMN IF NOT EXISTS occurrence_period tstzrange",
             "ALTER TABLE memories ADD COLUMN IF NOT EXISTS recurrence_days integer[]",
+            # v0.9.0: ColBERT multi-vector storage
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_vectors bytea",
         ]
         try:
             with self._pool.connection() as conn:  # type: ignore[union-attr]

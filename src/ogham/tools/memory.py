@@ -408,10 +408,15 @@ async def re_embed_all(ctx: Context) -> dict[str, Any]:
     clear_embedding_cache()
     provider = settings.embedding_provider
     chunk_size = settings.embedding_batch_size
-    await ctx.info(f"Re-embedding {total} memories in chunks of {chunk_size}...")
+    include_colbert = provider == "onnx"
+    await ctx.info(
+        f"Re-embedding {total} memories in chunks of {chunk_size}"
+        f" (colbert={'yes' if include_colbert else 'no'})..."
+    )
 
     # Embed + write in small chunks so memory stays bounded
     sparse_count = 0
+    colbert_count = 0
     succeeded = 0
 
     backend = get_backend()
@@ -423,22 +428,38 @@ async def re_embed_all(ctx: Context) -> dict[str, Any]:
         chunk_ids = [mem["id"] for mem in chunk]
 
         # Generate embeddings for this chunk only
-        full_results = generate_embeddings_batch_full(chunk_texts)
+        full_results = generate_embeddings_batch_full(
+            chunk_texts, include_colbert=include_colbert
+        )
 
         # Write dense embeddings
-        batch_update_embeddings(chunk_ids, [emb for emb, _ in full_results])
+        batch_update_embeddings(chunk_ids, [emb for emb, _, _ in full_results])
 
-        # Write sparse embeddings immediately
+        # Write sparse + colbert embeddings immediately
         if has_sparse:
-            for mem_id, (_, sparse_str) in zip(chunk_ids, full_results):
+            for mem_id, (_, sparse_str, colbert_bytes) in zip(chunk_ids, full_results):
+                updates = []
+                params: dict = {"id": mem_id}
+
                 if sparse_str is not None:
+                    updates.append("sparse_embedding = %(sparse)s::sparsevec")
+                    params["sparse"] = sparse_str
+                    sparse_count += 1
+
+                if colbert_bytes is not None:
+                    updates.append("colbert_vectors = %(colbert)s")
+                    params["colbert"] = colbert_bytes
+                    colbert_count += 1
+
+                if updates:
                     backend._execute(
-                        "UPDATE memories SET sparse_embedding = %(sparse)s::sparsevec"
-                        " WHERE id = %(id)s",
-                        {"id": mem_id, "sparse": sparse_str},
+                        f"UPDATE memories SET {', '.join(updates)} WHERE id = %(id)s",
+                        params,
                         fetch="none",
                     )
-                    sparse_count += 1
+
+        # Free colbert bytes immediately — they can be 2MB+ each
+        del full_results
 
         succeeded += len(chunk)
         await ctx.report_progress(succeeded, total)
@@ -454,6 +475,7 @@ async def re_embed_all(ctx: Context) -> dict[str, Any]:
         "provider": provider,
         "model": model,
         "sparse_updated": sparse_count,
+        "colbert_updated": colbert_count,
     }
 
 
