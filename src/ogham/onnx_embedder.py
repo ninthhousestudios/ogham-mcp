@@ -55,6 +55,12 @@ def _get_model(model_path: str | None = None):
         if model_path is None:
             model_path = str(Path.home() / ".cache" / "ogham" / "bge-m3-onnx" / "bge_m3_model.onnx")
 
+        if not Path(model_path).exists():
+            raise FileNotFoundError(
+                f"ONNX model not found at {model_path}. "
+                "Run 'ogham download-model bge-m3' to download it."
+            )
+
         logger.info("Loading tokenizer for BAAI/bge-m3...")
         _tokenizer = Tokenizer.from_pretrained("BAAI/bge-m3")
         _tokenizer.enable_truncation(max_length=8192)
@@ -89,8 +95,10 @@ def encode(text: str, model_path: str | None = None) -> OnnxResult:
     input_ids = np.array([encoded.ids], dtype=np.int64)
     attention_mask = np.array([encoded.attention_mask], dtype=np.int64)
 
-    outputs = session.run(None, {"input_ids": input_ids, "attention_mask": attention_mask})
-    dense_embeddings, sparse_weights, _colbert_vectors = outputs
+    dense_embeddings, sparse_weights = session.run(
+        ["dense_embeddings", "sparse_weights"],
+        {"input_ids": input_ids, "attention_mask": attention_mask},
+    )
 
     # Dense: already L2-normalized by the model export
     dense = dense_embeddings[0].tolist()

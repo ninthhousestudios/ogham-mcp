@@ -327,7 +327,7 @@ def import_cmd(
 @app.command()
 def init(
     db_url: str = typer.Option(None, help="PostgreSQL connection string"),
-    provider: str = typer.Option(None, help="Embedding provider (ollama/openai/voyage/mistral)"),
+    provider: str = typer.Option(None, help="Embedding provider (ollama/openai/voyage/mistral/onnx)"),
     api_key: str = typer.Option(None, help="Embedding provider API key"),
     backend: str = typer.Option(None, help="Database backend (supabase/postgres)"),
     supabase_url: str = typer.Option(None, help="Supabase project URL"),
@@ -354,6 +354,90 @@ def init(
         skip_clients=skip_clients,
         skip_test=skip_test,
     )
+
+
+@app.command("download-model")
+def download_model(
+    model: str = typer.Argument("bge-m3", help="Model to download (only bge-m3 supported)"),
+    path: Optional[str] = typer.Option(None, "--path", help="Download directory (default: ~/.cache/ogham/bge-m3-onnx)"),
+):
+    """Download ONNX model files for local embedding."""
+    import os
+    import shutil
+    import tempfile
+    import zipfile
+    from pathlib import Path
+    from urllib.request import urlretrieve
+
+    from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TransferSpeedColumn
+
+    MODELS = {
+        "bge-m3": {
+            "url": "https://github.com/yuniko-software/bge-m3-onnx/releases/download/1.01/onnx.zip",
+            "default_dir": Path.home() / ".cache" / "ogham" / "bge-m3-onnx",
+            "expected_files": ["bge_m3_model.onnx", "bge_m3_model.onnx_data"],
+        },
+    }
+
+    if model not in MODELS:
+        console.print(f"[red]Unknown model '{model}'. Available: {', '.join(MODELS)}[/red]")
+        raise typer.Exit(1)
+
+    info = MODELS[model]
+    dest = Path(path) if path else info["default_dir"]
+
+    # Check if already downloaded
+    if all((dest / f).exists() for f in info["expected_files"]):
+        console.print(f"[green]Model '{model}' already exists at {dest}[/green]")
+        raise typer.Exit(0)
+
+    console.print(f"Downloading [bold]{model}[/bold] to {dest}...")
+
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Downloading...", total=None)
+
+        def _reporthook(block_num, block_size, total_size):
+            if total_size > 0 and progress.tasks[task].total is None:
+                progress.update(task, total=total_size)
+            progress.update(task, completed=min(block_num * block_size, total_size) if total_size > 0 else block_num * block_size)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "model.zip"
+            urlretrieve(info["url"], zip_path, reporthook=_reporthook)
+
+            progress.update(task, description="Extracting...")
+            with zipfile.ZipFile(zip_path) as zf:
+                # Reject zip members with path traversal
+                for member in zf.namelist():
+                    if os.path.isabs(member) or ".." in member.split("/"):
+                        console.print(f"[red]Unsafe zip member: {member}[/red]")
+                        raise typer.Exit(1)
+                zf.extractall(tmpdir)
+
+            # The zip contains files at the top level or in a subdirectory —
+            # find the expected files and copy them to dest.
+            dest.mkdir(parents=True, exist_ok=True)
+            try:
+                for expected in info["expected_files"]:
+                    candidates = list(Path(tmpdir).rglob(expected))
+                    if not candidates:
+                        console.print(f"[red]Expected file '{expected}' not found in archive[/red]")
+                        raise typer.Exit(1)
+                    shutil.copy2(candidates[0], dest / expected)
+            except Exception:
+                # Clean up partial files on failure
+                for f in info["expected_files"]:
+                    (dest / f).unlink(missing_ok=True)
+                raise
+
+    console.print(f"[green]Model '{model}' downloaded to {dest}[/green]")
+    console.print(f"[dim]Set ONNX_MODEL_PATH={dest / info['expected_files'][0]} or use the default path.[/dim]")
 
 
 @app.command()

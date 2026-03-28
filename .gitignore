@@ -6,6 +6,8 @@ dist/
 build/
 *.egg
 
+backup-default-profile-2026-03-27-ollama-dense-only.json
+
 # Environment
 .env
 .env.local
