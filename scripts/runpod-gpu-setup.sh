@@ -157,6 +157,11 @@ CREATE TABLE IF NOT EXISTS memories (
 );\""
 echo "memories table ready"
 
+# Apply full schema (creates hybrid_search_memories function + indexes).
+# The table CREATE above is IF NOT EXISTS so this won't conflict.
+su - postgres -c "psql ogham < ${REPO_DIR}/sql/schema_postgres.sql"
+echo "Schema functions + indexes applied"
+
 echo "=== Step 11: Ingest BEAM dataset ==="
 echo "Ingesting all 100K bucket chats (dense + sparse embeddings)..."
 echo "With GPU this should take ~20-30 minutes (vs ~5 hours on CPU)."
