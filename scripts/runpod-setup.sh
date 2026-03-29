@@ -1,16 +1,13 @@
 #!/bin/bash
 # RunPod bootstrap for ColBERT compression benchmark.
 #
-# Docker image: postgres:16 (on RunPod, select this as the container image)
-#   - PostgreSQL 16 ready out of the box
-#   - Debian Bookworm base (Python 3.11 system, we install 3.13 via uv)
+# Docker image: runpod/base:0.7.0-ubuntu2204 (or any Ubuntu 22.04+ RunPod image)
 #
 # No data upload needed — ingests BEAM dataset and embeds from scratch on the pod.
 #
-# Prerequisites:
-#   1. Start a CPU pod with 48GB+ RAM on RunPod, image: postgres:16
+# Usage:
+#   1. Start a CPU pod with 48GB+ RAM on RunPod
 #   2. SSH in and run:
-#      apt-get update && apt-get install -y git
 #      git clone https://github.com/ninthhousestudios/ogham-mcp.git /workspace/ogham-mcp
 #      cd /workspace/ogham-mcp && git checkout worktree-colbert-reembed
 #      bash scripts/runpod-setup.sh
@@ -27,10 +24,10 @@ REPO_DIR="${WORKSPACE}/ogham-mcp"
 
 echo "=== Step 1: System packages ==="
 apt-get update -qq
-apt-get install -y -qq git build-essential curl postgresql-server-dev-16
+apt-get install -y -qq postgresql postgresql-contrib postgresql-server-dev-all git build-essential curl
 
 echo "=== Step 2: pgvector ==="
-if ! psql -U postgres -c "SELECT 1 FROM pg_available_extensions WHERE name='vector'" 2>/dev/null | grep -q 1; then
+if ! find /usr/lib/postgresql -name "vector.so" 2>/dev/null | grep -q .; then
     cd /tmp
     git clone --depth 1 https://github.com/pgvector/pgvector.git
     cd pgvector
@@ -38,14 +35,12 @@ if ! psql -U postgres -c "SELECT 1 FROM pg_available_extensions WHERE name='vect
 fi
 
 echo "=== Step 3: Start postgres + create DB ==="
-# postgres:16 image runs PG automatically, but ensure it's up
-pg_isready -U postgres || pg_ctlcluster 16 main start || {
-    # postgres:16 Docker image uses a different init
-    su - postgres -c "pg_ctl -D /var/lib/postgresql/data start" || true
-}
-psql -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='ogham'" | grep -q 1 || createdb -U postgres ogham
-psql -U postgres ogham -c 'CREATE EXTENSION IF NOT EXISTS vector'
-echo "PostgreSQL $(psql -U postgres -tc 'SHOW server_version' | xargs) with pgvector ready"
+PG_VER=$(pg_lsclusters -h | head -1 | awk '{print $1}')
+echo "Found PostgreSQL ${PG_VER}"
+pg_ctlcluster "${PG_VER}" main start || true
+su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='ogham'\" | grep -q 1 || createdb ogham"
+su - postgres -c "psql ogham -c 'CREATE EXTENSION IF NOT EXISTS vector'"
+echo "PostgreSQL ${PG_VER} with pgvector ready"
 
 echo "=== Step 4: Clone BEAM dataset ==="
 if [ ! -d /tmp/BEAM ]; then
@@ -62,7 +57,9 @@ fi
 cd "${REPO_DIR}"
 
 echo "=== Step 6: Install uv + Python 3.13 + deps ==="
-curl -LsSf https://astral.sh/uv/install.sh | sh
+if ! command -v uv &>/dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
 export PATH="$HOME/.local/bin:$PATH"
 uv python install 3.13
 uv sync --all-extras
