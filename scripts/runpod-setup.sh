@@ -40,6 +40,7 @@ echo "Found PostgreSQL ${PG_VER}"
 pg_ctlcluster "${PG_VER}" main start || true
 su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='ogham'\" | grep -q 1 || createdb ogham"
 su - postgres -c "psql ogham -c 'CREATE EXTENSION IF NOT EXISTS vector'"
+su - postgres -c "psql -c \"ALTER USER postgres PASSWORD 'postgres'\""
 echo "PostgreSQL ${PG_VER} with pgvector ready"
 
 echo "=== Step 4: Clone BEAM dataset ==="
@@ -69,14 +70,14 @@ uv venv --python /usr/bin/python3.13
 uv sync --all-extras
 
 echo "=== Step 7: Configure environment ==="
-export DATABASE_URL="postgresql://postgres@localhost/ogham"
+export DATABASE_URL="postgresql://postgres:postgres@localhost/ogham"
 export DATABASE_BACKEND="postgres"
 export EMBEDDING_PROVIDER="onnx"
 
 cat > benchmarks/.env.local << 'ENVEOF'
 EMBEDDING_PROVIDER=onnx
 DATABASE_BACKEND=postgres
-DATABASE_URL=postgresql://postgres@localhost/ogham
+DATABASE_URL=postgresql://postgres:postgres@localhost/ogham
 ENVEOF
 
 echo "=== Step 8: Download ONNX model ==="
@@ -92,7 +93,7 @@ fi
 echo "=== Step 9: Create table structure ==="
 uv run python -c "
 import os
-os.environ.setdefault('DATABASE_URL', 'postgresql://postgres@localhost/ogham')
+os.environ.setdefault('DATABASE_URL', 'postgresql://postgres:postgres@localhost/ogham')
 os.environ.setdefault('DATABASE_BACKEND', 'postgres')
 os.environ.setdefault('EMBEDDING_PROVIDER', 'onnx')
 from ogham.database import get_backend
