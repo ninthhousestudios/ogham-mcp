@@ -64,18 +64,19 @@ fi
 cd "${REPO_DIR}"
 
 echo "=== Step 6: Install uv + Python deps ==="
+# The curl installer sometimes fails on RunPod. pip install is more reliable.
 if ! command -v uv &>/dev/null; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+    pip install uv 2>/dev/null || pip3 install uv
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
 # CRITICAL: uv aggressively downloads Python 3.14 beta which breaks pydantic:
 #   TypeError: _eval_type() got an unexpected keyword argument 'prefer_fwd_module'
 # pyproject.toml has requires-python = ">=3.13,<3.14" to prevent this.
-# Belt and suspenders: also nuke any 3.14 uv already downloaded.
+# Belt and suspenders: pin to 3.13 and nuke any 3.14 uv already downloaded.
 rm -rf /root/.local/share/uv/python/cpython-3.14*
+uv python pin 3.13
 
-# The RunPod pytorch image already has Python 3.13 — use the system Python.
 # If venv exists from a previous run, remove it to avoid stale state.
 rm -rf .venv
 uv venv --python python3.13
