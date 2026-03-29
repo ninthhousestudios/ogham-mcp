@@ -146,6 +146,26 @@ def parse_configs(config_str: str) -> list[tuple[str, int]]:
     return configs
 
 
+def _save_results(output_path: Path, all_results: dict, args, colbert_configs: list,
+                   total_start: float) -> None:
+    """Save current results to disk (incremental save after each config)."""
+    total_elapsed = time.monotonic() - total_start
+    summary = {
+        "benchmark": "BEAM ColBERT compression matrix",
+        "bucket": args.bucket,
+        "top_k": args.top_k,
+        "total_configs": len(colbert_configs) + (0 if args.skip_baselines else 2),
+        "total_elapsed_seconds": round(total_elapsed, 1),
+        "results": all_results,
+    }
+    RESULTS_DIR.mkdir(exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    completed = sum(1 for v in all_results.values() if "error" not in v)
+    log.info("Progress saved: %d/%d configs completed -> %s",
+             completed, summary["total_configs"], output_path)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run full ColBERT compression benchmark matrix")
     parser.add_argument("--beam-dir", type=Path, default=Path("/tmp/BEAM"), help="Path to BEAM repo")
@@ -204,18 +224,33 @@ def main():
     from ogham.database import get_backend
     backend = get_backend()
 
+    # Resume support: load existing results if output file exists
+    all_results = {}
+    if output_path.exists():
+        try:
+            with open(output_path) as f:
+                existing = json.load(f)
+            all_results = existing.get("results", {})
+            completed = [k for k, v in all_results.items() if "error" not in v]
+            log.info("Resuming: loaded %d completed configs from %s", len(completed), output_path)
+        except (json.JSONDecodeError, KeyError) as e:
+            log.warning("Could not load existing results: %s (starting fresh)", e)
+            all_results = {}
+
     # Pre-compute query embeddings once
     log.info("=" * 70)
     log.info("PRE-COMPUTING QUERY EMBEDDINGS")
     log.info("=" * 70)
     cached = precompute_query_embeddings(args.beam_dir, args.bucket)
 
-    all_results = {}
     total_start = time.monotonic()
 
     # Baselines
     if not args.skip_baselines:
         for mode in ["tsvector", "sparse"]:
+            if mode in all_results and "error" not in all_results[mode]:
+                log.info("SKIPPING BASELINE %s (already completed)", mode)
+                continue
             log.info("=" * 70)
             log.info("BASELINE: %s", mode)
             log.info("=" * 70)
@@ -234,10 +269,18 @@ def main():
                 log.error("Baseline %s failed: %s", mode, e)
                 all_results[mode] = {"error": str(e)}
             gc.collect()
+            # Save after each config so progress isn't lost on crash
+            _save_results(output_path, all_results, args, colbert_configs, total_start)
 
     # ColBERT configs
     for i, (precision, pool_factor) in enumerate(colbert_configs):
         config_name = f"{precision}_pool{pool_factor}"
+
+        if config_name in all_results and "error" not in all_results[config_name]:
+            log.info("SKIPPING CONFIG %d/%d: %s (already completed)",
+                     i + 1, len(colbert_configs), config_name)
+            continue
+
         log.info("=" * 70)
         log.info("CONFIG %d/%d: %s", i + 1, len(colbert_configs), config_name)
         log.info("=" * 70)
@@ -271,23 +314,13 @@ def main():
             all_results[config_name] = {"error": str(e)}
 
         gc.collect()
+        # Save after each config so progress isn't lost on crash
+        _save_results(output_path, all_results, args, colbert_configs, total_start)
 
     total_elapsed = time.monotonic() - total_start
 
-    # Summary
-    summary = {
-        "benchmark": "BEAM ColBERT compression matrix",
-        "bucket": args.bucket,
-        "top_k": args.top_k,
-        "total_configs": len(colbert_configs) + (0 if args.skip_baselines else 2),
-        "total_elapsed_seconds": round(total_elapsed, 1),
-        "results": all_results,
-    }
-
-    RESULTS_DIR.mkdir(exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(summary, f, indent=2)
-    log.info("Matrix results saved to %s", output_path)
+    # Final save
+    _save_results(output_path, all_results, args, colbert_configs, total_start)
 
     # Print quick summary table
     print("\n" + "=" * 90)
