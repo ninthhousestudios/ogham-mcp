@@ -164,8 +164,8 @@ def main():
         help="Output JSON path (default: beam_results/matrix_{bucket}.json)",
     )
     parser.add_argument(
-        "--mem-limit-gb", type=int, default=8,
-        help="Virtual memory limit in GB (default: 8)",
+        "--mem-limit-gb", type=int, default=30,
+        help="Virtual memory limit in GB (default: 30)",
     )
     args = parser.parse_args()
 
