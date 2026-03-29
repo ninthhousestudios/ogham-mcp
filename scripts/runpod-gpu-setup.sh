@@ -1,14 +1,17 @@
 #!/bin/bash
 # RunPod GPU bootstrap for ColBERT compression benchmark.
 #
-# Docker image: runpod/pytorch:2.8.0-py3.13-cuda12.8.1-cudnn-devel-ubuntu22.04
+# Docker image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 #
 # This is the GPU version — uses onnxruntime-gpu with CUDA for ~10-20x faster
 # embedding vs CPU. See benchmarks/runpod-cpu-reference.md for the CPU version
 # and a full log of every setup issue we hit.
 #
+# Recommended pod: L4 GPU, 12+ vCPU, 80GB+ disk (not 20 or 30 — postgres
+# WAL bloat from bulk updates can easily eat 40-50GB).
+#
 # Usage:
-#   1. Start a GPU pod on RunPod (any NVIDIA GPU with 8GB+ VRAM)
+#   1. Start a GPU pod on RunPod with the image above and 80GB+ volume
 #   2. SSH in and run:
 #      git clone https://github.com/ninthhousestudios/ogham-mcp.git /workspace/ogham-mcp
 #      cd /workspace/ogham-mcp && git checkout worktree-colbert-reembed
@@ -16,10 +19,16 @@
 #
 # After setup completes, run:
 #   cd /workspace/ogham-mcp
-#   uv run python scripts/run-benchmark-matrix.py --beam-dir /tmp/BEAM --bucket 100K --mem-limit-gb 40
+#   OPENBLAS_NUM_THREADS=4 uv run python scripts/run-benchmark-matrix.py \
+#       --beam-dir /tmp/BEAM --bucket 100K --mem-limit-gb 40
 #   uv run python scripts/generate-results-table.py
 
 set -euo pipefail
+
+# OpenBLAS tries to spawn 64 threads by default — fails on pods with
+# limited vCPU (pthread_create "Resource temporarily unavailable").
+# Must be set before scipy is imported.
+export OPENBLAS_NUM_THREADS=4
 
 WORKSPACE="/workspace"
 REPO_DIR="${WORKSPACE}/ogham-mcp"
@@ -30,6 +39,7 @@ apt-get install -y -qq postgresql postgresql-contrib postgresql-server-dev-all g
 
 echo "=== Step 2: pgvector ==="
 # pgvector requires PG 13+. Ubuntu 22.04 ships PG 14, which is fine.
+# Ubuntu 20.04 ships PG 12 — pgvector will compile but error at runtime.
 if ! find /usr/lib/postgresql -name "vector.so" 2>/dev/null | grep -q .; then
     cd /tmp
     git clone --depth 1 https://github.com/pgvector/pgvector.git
@@ -41,12 +51,18 @@ echo "=== Step 3: Start postgres + create DB ==="
 PG_VER=$(pg_lsclusters -h | head -1 | awk '{print $1}')
 echo "Found PostgreSQL ${PG_VER}"
 pg_ctlcluster "${PG_VER}" main start || true
-# Set password first — TCP auth uses scram-sha-256 by default, not trust.
-# Adding trust to pg_hba.conf doesn't work (first matching rule wins, scram is above).
-# ALTER USER is the reliable fix.
+
+# TCP auth uses scram-sha-256 by default. Adding trust to pg_hba.conf
+# doesn't work (first matching rule wins, scram line is above).
+# ALTER USER with a password is the only reliable fix.
 su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='ogham'\" | grep -q 1 || createdb ogham"
 su - postgres -c "psql ogham -c 'CREATE EXTENSION IF NOT EXISTS vector'"
 su - postgres -c "psql -c \"ALTER USER postgres PASSWORD 'postgres'\""
+
+# Reduce WAL retention — default lets WAL grow unbounded under heavy writes.
+# The benchmark does ~70K UPDATEs across 24 repooling configs.
+su - postgres -c "psql -c \"ALTER SYSTEM SET max_wal_size = '2GB';\""
+su - postgres -c "psql -c 'SELECT pg_reload_conf();'"
 echo "PostgreSQL ${PG_VER} with pgvector ready"
 
 echo "=== Step 4: Clone BEAM dataset ==="
@@ -109,6 +125,9 @@ if 'CUDAExecutionProvider' not in providers:
 print('GPU acceleration confirmed.')
 "
 
+# Verify scipy + OpenBLAS work with our thread limit
+uv run python -c "from scipy.cluster.hierarchy import linkage; print('scipy ok')"
+
 echo "=== Step 8: Configure environment ==="
 export DATABASE_URL="postgresql://postgres:postgres@localhost/ogham"
 export DATABASE_BACKEND="postgres"
@@ -130,9 +149,11 @@ snapshot_download('yuniko-software/bge-m3-onnx', local_dir='${MODEL_DIR}')
 "
 fi
 
-echo "=== Step 10: Create table structure ==="
-# get_backend() auto-migration doesn't create the table from scratch on a fresh DB.
-# Create it explicitly via SQL so ingest doesn't fail with "relation does not exist".
+echo "=== Step 10: Create table + schema ==="
+# get_backend() auto-migration only adds columns — it doesn't create the table
+# or the search functions. We need both before ingest can work.
+
+# Create table first (IF NOT EXISTS so it's safe to re-run).
 su - postgres -c "psql ogham -c \"
 CREATE TABLE IF NOT EXISTS memories (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -157,32 +178,47 @@ CREATE TABLE IF NOT EXISTS memories (
 );\""
 echo "memories table ready"
 
-# Apply full schema (creates hybrid_search_memories function + indexes).
-# The table CREATE above is IF NOT EXISTS so this won't conflict.
-su - postgres -c "psql ogham < ${REPO_DIR}/sql/schema_postgres.sql"
+# Apply full schema — creates hybrid_search_memories and other functions.
+# Uses ON_ERROR_STOP=0 because CREATE TYPE relationship_type will fail if
+# it already exists, and we want to continue past that to create the functions.
+su - postgres -c "psql -v ON_ERROR_STOP=0 ogham < ${REPO_DIR}/sql/schema_postgres.sql"
 echo "Schema functions + indexes applied"
 
 echo "=== Step 11: Ingest BEAM dataset ==="
 echo "Ingesting all 100K bucket chats (dense + sparse embeddings)..."
-echo "With GPU this should take ~20-30 minutes (vs ~5 hours on CPU)."
-echo "Note: output appears per-chat, not per-batch. First chat takes ~1-2 min."
+echo "With GPU this takes ~3-5 minutes (~10s/chat)."
+echo "Note: output appears per-chat, not per-batch."
 uv run python benchmarks/beam_benchmark.py --ingest --bucket 100K --beam-dir /tmp/BEAM
 
-echo "=== Step 11b: Compact postgres WAL ==="
-# Bulk inserts generate huge WAL. Checkpoint + vacuum to reclaim disk.
-su - postgres -c "psql ogham -c 'CHECKPOINT; VACUUM;'"
-echo "WAL compacted"
+echo "=== Step 11b: Compact postgres ==="
+# Bulk inserts generate dead tuples + WAL. VACUUM FULL rewrites the table
+# and actually reclaims disk. Regular VACUUM only marks space as reusable.
+su - postgres -c "psql ogham -c 'CHECKPOINT;'"
+su - postgres -c "psql ogham -c 'VACUUM FULL memories;'"
+echo "Postgres compacted"
 
-echo "=== Step 12: Embed raw f32 ColBERT + sparse vectors for all profiles ==="
+echo "=== Step 12: Embed raw f32 ColBERT vectors for all profiles ==="
 echo "Re-embedding all profiles with raw f32 ColBERT..."
 uv run python scripts/embed-colbert-raw.py --all
+
+echo "=== Step 12b: Compact postgres again ==="
+su - postgres -c "psql ogham -c 'CHECKPOINT;'"
+su - postgres -c "psql ogham -c 'VACUUM FULL memories;'"
+echo "Postgres compacted"
 
 echo ""
 echo "=== Setup complete ==="
 echo ""
-echo "Run the benchmark:"
+echo "Run the benchmark (OPENBLAS_NUM_THREADS is critical — without it scipy"
+echo "tries to spawn 64 threads and crashes on limited-vCPU pods):"
+echo ""
 echo "  cd ${REPO_DIR}"
-echo "  uv run python scripts/run-benchmark-matrix.py --beam-dir /tmp/BEAM --bucket 100K --mem-limit-gb 40"
+echo "  OPENBLAS_NUM_THREADS=4 uv run python scripts/run-benchmark-matrix.py \\"
+echo "      --beam-dir /tmp/BEAM --bucket 100K --mem-limit-gb 40"
 echo ""
 echo "Then generate tables:"
 echo "  uv run python scripts/generate-results-table.py"
+echo ""
+echo "TIP: If disk usage climbs during the benchmark, run in another terminal:"
+echo "  su - postgres -c \"psql ogham -c 'CHECKPOINT;'\""
+echo "  su - postgres -c \"psql ogham -c 'VACUUM FULL memories;'\""
