@@ -62,6 +62,7 @@ if ! command -v uv &>/dev/null; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 uv python install 3.13
+uv venv --python 3.13
 uv sync --all-extras
 
 echo "=== Step 7: Configure environment ==="
