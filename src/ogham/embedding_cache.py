@@ -27,7 +27,7 @@ class EmbeddingCache:
             """CREATE TABLE IF NOT EXISTS embeddings (
                 key TEXT PRIMARY KEY,
                 value BLOB NOT NULL,
-                created_at REAL NOT NULL DEFAULT (unixepoch('now'))
+                created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
             )"""
         )
         self._conn.commit()
