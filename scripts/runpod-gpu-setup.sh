@@ -130,25 +130,42 @@ snapshot_download('yuniko-software/bge-m3-onnx', local_dir='${MODEL_DIR}')
 fi
 
 echo "=== Step 10: Create table structure ==="
-# get_backend() auto-migrates the memories table.
-# The colbert_vectors_raw column is added by embed-colbert-raw.py,
-# so no need to ALTER TABLE here (that failed on the CPU attempt
-# because the table didn't exist yet before ingest).
-uv run python -c "
-import os
-os.environ.setdefault('DATABASE_URL', 'postgresql://postgres:postgres@localhost/ogham')
-os.environ.setdefault('DATABASE_BACKEND', 'postgres')
-os.environ.setdefault('EMBEDDING_PROVIDER', 'onnx')
-from ogham.database import get_backend
-b = get_backend()
-print('Backend ready, table auto-migrated')
-"
+# get_backend() auto-migration doesn't create the table from scratch on a fresh DB.
+# Create it explicitly via SQL so ingest doesn't fail with "relation does not exist".
+su - postgres -c "psql ogham -c \"
+CREATE TABLE IF NOT EXISTS memories (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    content text NOT NULL,
+    embedding vector(1024),
+    profile text NOT NULL DEFAULT 'default',
+    source text,
+    tags text[] DEFAULT '{}',
+    metadata jsonb DEFAULT '{}',
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now(),
+    expires_at timestamptz,
+    importance integer DEFAULT 5,
+    access_count integer DEFAULT 0,
+    last_accessed_at timestamptz,
+    confidence real DEFAULT 0.7,
+    compression_level integer DEFAULT 0,
+    original_content text,
+    sparse_embedding sparsevec(250002),
+    colbert_vectors bytea,
+    colbert_vectors_raw bytea
+);\""
+echo "memories table ready"
 
 echo "=== Step 11: Ingest BEAM dataset ==="
 echo "Ingesting all 100K bucket chats (dense + sparse embeddings)..."
 echo "With GPU this should take ~20-30 minutes (vs ~5 hours on CPU)."
 echo "Note: output appears per-chat, not per-batch. First chat takes ~1-2 min."
 uv run python benchmarks/beam_benchmark.py --ingest --bucket 100K --beam-dir /tmp/BEAM
+
+echo "=== Step 11b: Compact postgres WAL ==="
+# Bulk inserts generate huge WAL. Checkpoint + vacuum to reclaim disk.
+su - postgres -c "psql ogham -c 'CHECKPOINT; VACUUM;'"
+echo "WAL compacted"
 
 echo "=== Step 12: Embed raw f32 ColBERT + sparse vectors for all profiles ==="
 echo "Re-embedding all profiles with raw f32 ColBERT..."
