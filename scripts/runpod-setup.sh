@@ -61,8 +61,11 @@ if ! command -v uv &>/dev/null; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 export PATH="$HOME/.local/bin:$PATH"
+# Remove any 3.14 beta — pydantic doesn't support it yet
+rm -rf /root/.local/share/uv/python/cpython-3.14*
 uv python install 3.13
-uv venv --python 3.13
+rm -rf .venv
+uv venv --python /usr/bin/python3.13
 uv sync --all-extras
 
 echo "=== Step 7: Configure environment ==="
