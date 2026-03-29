@@ -75,12 +75,24 @@ def _get_model(model_path: str | None = None):
         options.log_severity_level = 2  # WARNING
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
 
+        # Use GPU if available, otherwise CPU
+        available = ort.get_available_providers()
+        if "CUDAExecutionProvider" in available:
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        else:
+            providers = ["CPUExecutionProvider"]
+
         _session = ort.InferenceSession(
             model_path,
             sess_options=options,
-            providers=["CPUExecutionProvider"],
+            providers=providers,
         )
-        logger.info("ONNX BGE-M3 model loaded.")
+        active = _session.get_providers()
+        logger.info("ONNX BGE-M3 model loaded (providers: %s).", active)
+
+        # If CUDA was requested but didn't load, warn loudly
+        if "CUDAExecutionProvider" in available and "CUDAExecutionProvider" not in active:
+            logger.warning("CUDAExecutionProvider was available but failed to load!")
         return _tokenizer, _session
 
 
