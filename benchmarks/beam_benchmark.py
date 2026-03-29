@@ -954,10 +954,16 @@ _MEM_LIMIT_GB = int(os.environ.get("BEAM_MEM_LIMIT_GB", "8"))
 
 
 def main():
-    # Cap virtual memory to prevent OOM-killing the whole system
+    # Cap heap memory to prevent OOM-killing the whole system.
+    # Use RLIMIT_DATA (heap only), NOT RLIMIT_AS (virtual address space) —
+    # RLIMIT_AS kills CUDA/ONNX GPU because mmap'd shared libs and GPU driver
+    # mappings count against virtual space but don't use real RAM.
     mem_bytes = _MEM_LIMIT_GB * 1024 * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-    logger.info("Memory limit set to %d GB", _MEM_LIMIT_GB)
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA, (mem_bytes, mem_bytes))
+        logger.info("Memory limit (RLIMIT_DATA) set to %d GB", _MEM_LIMIT_GB)
+    except (ValueError, OSError) as e:
+        logger.warning("Could not set memory limit: %s (continuing without limit)", e)
 
     parser = argparse.ArgumentParser(
         description="BEAM benchmark for Ogham MCP",
