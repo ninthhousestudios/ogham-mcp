@@ -152,17 +152,46 @@ def search_memories_enriched(
     graph_depth: int = 0,
     embedding: list[float] | None = None,
 ) -> list[dict[str, Any]]:
-    """Full search pipeline: embed query, search, optional graph traversal, record access.
+    """Full search pipeline: retrieve, rerank (optional), record access.
 
-    If the query has temporal intent, resolves date references and boosts
-    results whose dates fall within the resolved range.
+    Pipeline stages:
+    1. _search_memories_raw: intent detection, retrieval, temporal/entity enrichment
+    2. _maybe_rerank: optional FlashRank cross-encoder reranking (RERANK_ENABLED=true)
+    3. Record access for retrieved memories
+    """
+    results = _search_memories_raw(query, profile, limit, tags, source, graph_depth, embedding)
+
+    if results:
+        results = _maybe_rerank(query, results, limit)
+        record_access([r["id"] for r in results])
+
+    return results
+
+
+def _maybe_rerank(query: str, results: list[dict], limit: int) -> list[dict]:
+    """Apply cross-encoder reranking if enabled via RERANK_ENABLED."""
+    from ogham.config import settings
+
+    if not settings.rerank_enabled:
+        return results
+    from ogham.reranker import rerank_results
+
+    return rerank_results(query, results, top_k=limit, alpha=settings.rerank_alpha)
+
+
+def _search_memories_raw(
+    query: str,
+    profile: str,
+    limit: int = 10,
+    tags: list[str] | None = None,
+    source: str | None = None,
+    graph_depth: int = 0,
+    embedding: list[float] | None = None,
+) -> list[dict[str, Any]]:
+    """Retrieve memories via intent-aware search paths. No reranking, no access recording.
 
     When the embedding provider is ONNX, sparse vectors are generated
     automatically and the sparse hybrid search path is used.
-
-    Elastic K: ordering, summary, and multi-session queries automatically
-    expand the result limit to 2x for broader coverage of scattered facts.
-    Point queries (extraction, preference) keep the original limit.
     """
     query_sparse: str | None = None
     if embedding is None:
@@ -175,76 +204,41 @@ def search_memories_enriched(
         return hybrid_search_memories(q_text, q_emb, prof, lim, t, s)
 
     # Elastic K: set-queries (ordering, summary, multi-session) get 2x limit
-    # for broader coverage of scattered facts across the timeline.
     elastic_limit = limit * 2
 
     # Ordering queries: strided retrieval + entity threading + chronological sort
     if is_ordering_query(query):
-        results = _do_hybrid_search(
-            query,
-            embedding,
-            profile,
-            elastic_limit * 5,
-            tags,
-            source,
-        )
+        results = _do_hybrid_search(query, embedding, profile, elastic_limit * 5, tags, source)
         if results:
-            # Strided retrieval first: ensure broad timeline coverage
             strided = _strided_retrieval(results, elastic_limit * 2)
-            # Entity threading on strided results for full entity history
             threaded = _entity_thread(
                 strided, query, embedding, profile, elastic_limit * 2, tags, source
             )
-            # Sort by date extracted from content, then trim
             for r in threaded:
                 r["_sort_date"] = _extract_memory_date(r) or "9999"
             threaded.sort(key=lambda r: r["_sort_date"])
             results = threaded[:elastic_limit]
-            record_access([r["id"] for r in results])
         return results
 
     # Multi-hop temporal: entity-centric bridge retrieval + threading
     if is_multi_hop_temporal(query):
         bridge_results = _bridge_retrieval(query, profile, elastic_limit, tags, source)
         if bridge_results:
-            # Merge bridge results with standard search
             results = _merge_bridge_results(
-                bridge_results,
-                query,
-                embedding,
-                profile,
-                elastic_limit,
-                tags,
-                source,
+                bridge_results, query, embedding, profile, elastic_limit, tags, source
             )
-            # Entity threading on merged results for full entity history
             if results:
                 results = _entity_thread(
-                    results,
-                    query,
-                    embedding,
-                    profile,
-                    elastic_limit,
-                    tags,
-                    source,
+                    results, query, embedding, profile, elastic_limit, tags, source
                 )
-                record_access([r["id"] for r in results])
             return results
 
     # Broad summary queries: strided retrieval for timeline coverage
     if is_broad_summary_query(query):
-        results = _do_hybrid_search(
-            query,
-            embedding,
-            profile,
-            elastic_limit * 5,
-            tags,
-            source,
-        )
+        results = _do_hybrid_search(query, embedding, profile, elastic_limit * 5, tags, source)
         if results:
             results = _strided_retrieval(results, elastic_limit)
             results = _mmr_rerank(results, embedding, elastic_limit, lambda_param=0.5)
-            record_access([r["id"] for r in results])
         return results
 
     # Standard search path
@@ -263,22 +257,12 @@ def search_memories_enriched(
             source=source,
         )
     else:
-        results = _do_hybrid_search(
-            query,
-            embedding,
-            profile,
-            fetch_limit,
-            tags,
-            source,
-        )
+        results = _do_hybrid_search(query, embedding, profile, fetch_limit, tags, source)
 
     # Single-anchor temporal re-ranking
     if results and has_temporal_intent(query):
         results = _temporal_rerank(results, query)
         results = results[:limit]
-
-    if results:
-        record_access([r["id"] for r in results])
 
     return results
 

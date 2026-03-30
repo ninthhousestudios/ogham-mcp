@@ -523,6 +523,22 @@ wheels = [
 ]
 
 [[package]]
+name = "flashrank"
+version = "0.2.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "onnxruntime" },
+    { name = "requests" },
+    { name = "tokenizers" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/55/1f/176cb4a857a70c3538f637e19389ab6aed21548a1ba1d1424fccc8bba108/FlashRank-0.2.10.tar.gz", hash = "sha256:f8f82a25c32fdfc668a09dc4089421d6aab8e7f71308424b541f40bb3f01d9db", size = 18905, upload-time = "2025-01-06T13:33:01.657Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/99/72639cc1c9221c5bc77a2df1c2d352fe11965553bdf7d3e0856e7fcc8fd6/FlashRank-0.2.10-py3-none-any.whl", hash = "sha256:5d3272ae657d793c132d1e7917ed9e2adf49e0e1c60735583a67b051c6f0434a", size = 14511, upload-time = "2025-01-06T13:32:59.42Z" },
+]
+
+[[package]]
 name = "flatbuffers"
 version = "25.12.19"
 source = { registry = "https://pypi.org/simple" }
@@ -1294,7 +1310,7 @@ wheels = [
 
 [[package]]
 name = "ogham-mcp"
-version = "0.8.2"
+version = "0.8.3"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
@@ -1311,6 +1327,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "flashrank" },
     { name = "google-genai" },
     { name = "mistralai" },
     { name = "onnxruntime" },
@@ -1338,6 +1355,9 @@ postgres = [
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
 ]
+rerank = [
+    { name = "flashrank" },
+]
 voyage = [
     { name = "voyageai" },
 ]
@@ -1345,6 +1365,8 @@ voyage = [
 [package.metadata]
 requires-dist = [
     { name = "fastmcp", specifier = ">=2.14" },
+    { name = "flashrank", marker = "extra == 'all'", specifier = ">=0.2" },
+    { name = "flashrank", marker = "extra == 'rerank'", specifier = ">=0.2" },
     { name = "google-genai", marker = "extra == 'all'", specifier = ">=1.0" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
     { name = "mistralai", marker = "extra == 'all'", specifier = ">=1.0" },
@@ -1372,7 +1394,7 @@ requires-dist = [
     { name = "voyageai", marker = "extra == 'all'", specifier = ">=0.3" },
     { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.3" },
 ]
-provides-extras = ["dev", "postgres", "mistral", "voyage", "gemini", "onnx", "all"]
+provides-extras = ["dev", "postgres", "mistral", "voyage", "gemini", "onnx", "rerank", "all"]
 
 [[package]]
 name = "ollama"

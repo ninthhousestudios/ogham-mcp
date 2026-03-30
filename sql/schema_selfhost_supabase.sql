@@ -391,8 +391,8 @@ with semantic as (
 keyword as (
     select
         m.id,
-        row_number() over (order by ts_rank_cd(m.fts, websearch_to_tsquery(query_text)) desc) as rank_ix,
-        ts_rank_cd(m.fts, websearch_to_tsquery(query_text))::float as keyword_rank
+        row_number() over (order by ts_rank_cd(m.fts, websearch_to_tsquery(query_text), 34) desc) as rank_ix,
+        ts_rank_cd(m.fts, websearch_to_tsquery(query_text), 34)::float as keyword_rank
     from memories m
     where m.profile = filter_profile
       and m.fts @@ websearch_to_tsquery(query_text)

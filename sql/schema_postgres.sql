@@ -9,7 +9,7 @@ create extension if not exists vector with schema public;
 create table if not exists memories (
     id uuid primary key default gen_random_uuid(),
     content text not null,
-    embedding vector(1024),
+    embedding vector(512),
     metadata jsonb default '{}'::jsonb,
     source text,
     profile text not null default 'default',
@@ -26,8 +26,7 @@ create table if not exists memories (
     original_content text,
     occurrence_period tstzrange,
     recurrence_days int[],
-    fts tsvector generated always as (to_tsvector('english', content)) stored,
-    sparse_embedding sparsevec
+    fts tsvector generated always as (to_tsvector('english', content)) stored
 );
 
 -- lz4 TOAST compression for text columns (faster decompress than default pglz)
@@ -37,7 +36,7 @@ alter table memories alter column metadata set compression lz4;
 
 -- HNSW index for fast cosine similarity search
 create index if not exists memories_embedding_idx
-    on memories using hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
+    on memories using hnsw ((embedding::halfvec(512)) halfvec_cosine_ops)
     with (m = 16, ef_construction = 64);
 
 -- GIN indexes for filtering
@@ -107,7 +106,7 @@ CREATE INDEX idx_relationships_auto
 -- RPC: auto-link a new memory to similar existing memories
 CREATE OR REPLACE FUNCTION auto_link_memory(
     new_memory_id uuid,
-    new_embedding vector(1024),
+    new_embedding vector(512),
     link_threshold float DEFAULT 0.85,
     max_links int DEFAULT 5,
     filter_profile text DEFAULT 'default'
@@ -118,13 +117,13 @@ SECURITY INVOKER
 SET search_path = public, extensions
 AS $$
     WITH candidates AS (
-        SELECT m.id, (1 - (m.embedding::halfvec(1024) <=> new_embedding::halfvec(1024)))::float AS similarity
+        SELECT m.id, (1 - (m.embedding::halfvec(512) <=> new_embedding::halfvec(512)))::float AS similarity
         FROM memories m
         WHERE m.id != new_memory_id
           AND m.profile = filter_profile
           AND (m.expires_at IS NULL OR m.expires_at > now())
-          AND 1 - (m.embedding::halfvec(1024) <=> new_embedding::halfvec(1024)) > link_threshold
-        ORDER BY m.embedding::halfvec(1024) <=> new_embedding::halfvec(1024)
+          AND 1 - (m.embedding::halfvec(512) <=> new_embedding::halfvec(512)) > link_threshold
+        ORDER BY m.embedding::halfvec(512) <=> new_embedding::halfvec(512)
         LIMIT max_links
     ),
     inserted AS (
@@ -240,7 +239,7 @@ $$;
 
 -- RPC function for cosine similarity search with ACT-R temporal scoring
 create or replace function match_memories(
-    query_embedding vector(1024),
+    query_embedding vector(512),
     match_threshold float default 0.7,
     match_count int default 10,
     filter_tags text[] default null,
@@ -275,13 +274,13 @@ begin
         m.source,
         m.profile,
         m.tags,
-        (1 - (m.embedding::halfvec(1024) <=> query_embedding::halfvec(1024)))::float as similarity,
+        (1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512)))::float as similarity,
         -- Relevance = similarity * softplus(ACT-R) * confidence * graph_boost
         -- ACT-R: B(M) = ln(n+1) - 0.5 * ln(ageDays / (n+1))
         -- softplus: ln(1 + exp(B)) keeps score positive
         -- graph_boost: (1 + sum(relationship_strength) * 0.2)
         (
-            (1 - (m.embedding::halfvec(1024) <=> query_embedding::halfvec(1024))) *
+            (1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512))) *
             ln(1.0 + exp(
                 ln(m.access_count + 1.0) -
                 0.5 * ln(
@@ -306,7 +305,7 @@ begin
         where r.target_id = m.id or r.source_id = m.id
     ) g on true
     where
-        1 - (m.embedding::halfvec(1024) <=> query_embedding::halfvec(1024)) > match_threshold
+        1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512)) > match_threshold
         and (filter_tags is null or m.tags && filter_tags)
         and (filter_source is null or m.source = filter_source)
         and m.profile = filter_profile
@@ -340,19 +339,21 @@ AS $function$
 with semantic as (
     select
         m.id,
-        (1 - (m.embedding::halfvec(1024) <=> query_embedding::halfvec(1024)))::float as similarity
+        (1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512)))::float as similarity,
+        row_number() over (order by m.embedding::halfvec(512) <=> query_embedding::halfvec(512)) as rank_ix
     from memories m
     where m.profile = filter_profile
       and (filter_tags is null or m.tags && filter_tags)
       and (filter_source is null or m.source = filter_source)
       and (m.expires_at is null or m.expires_at > now())
-    order by m.embedding::halfvec(1024) <=> query_embedding::halfvec(1024)
+    order by m.embedding::halfvec(512) <=> query_embedding::halfvec(512)
     limit match_count * 3
 ),
 keyword as (
     select
         m.id,
-        ts_rank_cd(m.fts, websearch_to_tsquery(query_text))::float as keyword_rank
+        ts_rank_cd(m.fts, websearch_to_tsquery(query_text), 34)::float as keyword_rank,
+        row_number() over (order by ts_rank_cd(m.fts, websearch_to_tsquery(query_text), 34) desc) as rank_ix
     from memories m
     where m.profile = filter_profile
       and m.fts @@ websearch_to_tsquery(query_text)
@@ -367,96 +368,13 @@ fused as (
         coalesce(s.id, k.id) as id,
         coalesce(s.similarity, 0.0) as similarity,
         coalesce(k.keyword_rank, 0.0) as keyword_rank,
+        -- Reciprocal Rank Fusion: position-based, score-agnostic
         (
-            semantic_weight * coalesce(s.similarity, 0.0)
-            + full_text_weight * coalesce(k.keyword_rank, 0.0)
+            semantic_weight * (1.0 / (rrf_k + coalesce(s.rank_ix, match_count * 3)))
+            + full_text_weight * (1.0 / (rrf_k + coalesce(k.rank_ix, match_count * 3)))
         ) as score
     from semantic s
     full outer join keyword k on s.id = k.id
-)
-select
-    m.id, m.content, m.metadata, m.source, m.profile, m.tags,
-    f.similarity, f.keyword_rank,
-    (
-        f.score
-        * (1.0 + ln(m.access_count + 1.0) * 0.1)
-        * m.confidence
-        * (1.0 + g.graph_boost * 0.2)
-    )::float as relevance,
-    m.access_count, m.last_accessed_at, m.confidence, m.created_at, m.updated_at
-from fused f
-join memories m on m.id = f.id
-left join lateral (
-    select coalesce(sum(r.strength), 0.0) as graph_boost
-    from memory_relationships r
-    where r.target_id = m.id or r.source_id = m.id
-) g on true
-order by relevance desc
-limit match_count;
-$function$;
-
--- RPC: hybrid search using neural sparse vectors instead of tsvector
--- Replaces the keyword CTE with sparse vector inner product.
--- Used for A/B benchmarking against hybrid_search_memories (tsvector variant).
-CREATE OR REPLACE FUNCTION hybrid_search_memories_sparse(
-    query_text text,
-    query_embedding vector,
-    query_sparse sparsevec,
-    match_count integer DEFAULT 10,
-    filter_profile text DEFAULT 'default',
-    filter_tags text[] DEFAULT NULL,
-    filter_source text DEFAULT NULL,
-    sparse_weight float DEFAULT 0.3,
-    semantic_weight float DEFAULT 0.7,
-    rrf_k integer DEFAULT 10
-)
-RETURNS TABLE(
-    id uuid, content text, metadata jsonb, source text, profile text, tags text[],
-    similarity float, keyword_rank float, relevance float,
-    access_count integer, last_accessed_at timestamptz, confidence float,
-    created_at timestamptz, updated_at timestamptz
-)
-LANGUAGE sql
-SET search_path = public, extensions
-AS $function$
-with semantic as (
-    select
-        m.id,
-        (1 - (m.embedding::halfvec(1024) <=> query_embedding::halfvec(1024)))::float as similarity
-    from memories m
-    where m.profile = filter_profile
-      and (filter_tags is null or m.tags && filter_tags)
-      and (filter_source is null or m.source = filter_source)
-      and (m.expires_at is null or m.expires_at > now())
-    order by m.embedding::halfvec(1024) <=> query_embedding::halfvec(1024)
-    limit match_count * 3
-),
-sparse as (
-    select
-        m.id,
-        -- Inner product between query sparse and stored sparse vectors.
-        -- pgvector's <#> returns negative inner product, so negate it.
-        (-(m.sparse_embedding <#> query_sparse))::float as sparse_score
-    from memories m
-    where m.profile = filter_profile
-      and m.sparse_embedding is not null
-      and (filter_tags is null or m.tags && filter_tags)
-      and (filter_source is null or m.source = filter_source)
-      and (m.expires_at is null or m.expires_at > now())
-    order by sparse_score desc
-    limit match_count * 3
-),
-fused as (
-    select
-        coalesce(s.id, sp.id) as id,
-        coalesce(s.similarity, 0.0) as similarity,
-        coalesce(sp.sparse_score, 0.0) as keyword_rank,
-        (
-            semantic_weight * coalesce(s.similarity, 0.0)
-            + sparse_weight * coalesce(sp.sparse_score, 0.0)
-        ) as score
-    from semantic s
-    full outer join sparse sp on s.id = sp.id
 )
 select
     m.id, m.content, m.metadata, m.source, m.profile, m.tags,
@@ -534,7 +452,7 @@ $$;
 -- RPC: batch update embeddings (reduces N+1 round trips in re_embed_all)
 create or replace function batch_update_embeddings(
     memory_ids uuid[],
-    new_embeddings vector(1024)[]
+    new_embeddings vector(512)[]
 )
 returns integer
 language plpgsql
@@ -560,7 +478,7 @@ $$;
 -- indicating whether each embedding has a match above threshold.
 -- Uses a simple cosine similarity check (no ACT-R scoring needed for dedup).
 create or replace function batch_check_duplicates(
-    query_embeddings vector(1024)[],
+    query_embeddings vector(512)[],
     match_threshold float default 0.8,
     filter_profile text default 'default'
 )
@@ -582,7 +500,7 @@ begin
             select 1 from memories m
             where m.profile = filter_profile
               and (m.expires_at is null or m.expires_at > now())
-              and 1 - (m.embedding::halfvec(1024) <=> query_embeddings[i]::halfvec(1024)) > match_threshold
+              and 1 - (m.embedding::halfvec(512) <=> query_embeddings[i]::halfvec(512)) > match_threshold
             limit 1
         ) into found;
         results := array_append(results, found);
@@ -656,7 +574,7 @@ $$;
 -- RPC: explore knowledge graph — hybrid search seeds + relationship traversal
 CREATE OR REPLACE FUNCTION explore_memory_graph(
     query_text text,
-    query_embedding vector(1024),
+    query_embedding vector(512),
     filter_profile text DEFAULT 'default',
     match_count int DEFAULT 5,
     traversal_depth int DEFAULT 1,

@@ -1,6 +1,6 @@
 [project]
 name = "ogham-mcp"
-version = "0.8.2"
+version = "0.8.3"
 description = "Shared memory MCP server — persistent, searchable, cross-client"
 requires-python = ">=3.13"
 dependencies = [
@@ -26,6 +26,7 @@ mistral = ["mistralai>=1.0"]
 voyage = ["voyageai>=0.3"]
 gemini = ["google-genai>=1.0"]
 onnx = ["onnxruntime>=1.17", "tokenizers>=0.19"]
+rerank = ["flashrank>=0.2"]
 all = [
     "mistralai>=1.0",
     "voyageai>=0.3",
@@ -34,6 +35,7 @@ all = [
     "psycopg[binary]>=3.1",
     "onnxruntime>=1.17",
     "tokenizers>=0.19",
+    "flashrank>=0.2",
 ]
 
 [project.urls]

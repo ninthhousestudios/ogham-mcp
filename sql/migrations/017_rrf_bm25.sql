@@ -1,0 +1,17 @@
+-- Migration 017: True RRF fusion + BM25-approximating keyword scoring
+--
+-- Changes:
+-- 1. ts_rank_cd flag 34 (2+32): length-normalised keyword scoring
+--    - Flag 2: divides by log(length) + 1
+--    - Flag 32: divides by harmonic mean (penalises long repetitive docs)
+-- 2. Reciprocal Rank Fusion: position-based scoring instead of raw score addition
+--    - Fixes unstable fusion where unbounded ts_rank scores override cosine similarity
+--    - Uses row_number() rank positions with rrf_k parameter (default 10)
+--
+-- Apply by re-running the full schema file for your backend:
+--   - Supabase Cloud: schema.sql
+--   - Self-hosted Supabase: schema_selfhost_supabase.sql
+--   - Postgres/Neon: schema_postgres.sql
+--
+-- The CREATE OR REPLACE FUNCTION statements will update the existing functions.
+-- No data migration needed -- this only changes ranking behaviour.

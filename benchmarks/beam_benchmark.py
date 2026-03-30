@@ -312,7 +312,7 @@ def evaluate_question(
     category: str,
     chat_id: int,
     profile: str,
-    query_embedding: list[float],
+    query_embedding: list[float] | None = None,
     top_k: int = 10,
     search_mode: str = "tsvector",
     query_sparse: str | None = None,
@@ -320,6 +320,10 @@ def evaluate_question(
     """Evaluate a single probing question against stored memories.
 
     Returns metrics dict with recall, MRR, NDCG, plus question metadata.
+
+    When embedding is None, search_memories_enriched generates embeddings
+    internally via generate_embedding_full(), which auto-routes to the
+    three-signal path (dense + FTS + sparse) for ONNX providers.
     """
     from ogham.service import search_memories_enriched
 
@@ -329,9 +333,7 @@ def evaluate_question(
         query=query,
         profile=profile,
         limit=max(top_k, 50),
-        embedding=query_embedding,
-        search_mode=search_mode,
-        query_sparse=query_sparse,
+        embedding=query_embedding,  # None = let service layer embed + route to sparse
     )
 
     # Gold answer: source_chat_ids field tells us which chat IDs contain the answer
@@ -459,20 +461,22 @@ def evaluate_bucket(
 
     # Pre-batch all query embeddings (1000 at a time with Voyage)
     query_texts = [q[2]["question"] for q in all_questions]
-    logger.info("Pre-embedding %d queries (batch_size=%s)...", len(query_texts), EMBEDDING_BATCH_SIZE)
+    logger.info(
+        "Pre-embedding %d queries (batch_size=%s)...", len(query_texts), EMBEDDING_BATCH_SIZE
+    )
     query_embeddings = _with_retry(
         generate_embeddings_batch, query_texts, batch_size=EMBEDDING_BATCH_SIZE
     )
     logger.info("Query embeddings ready")
 
     # Generate sparse query vectors if in sparse mode
-    query_sparse_literals: list[str | None] = [None] * len(query_texts)
+    [None] * len(query_texts)
     if search_mode == "sparse":
         from sparse_embeddings import generate_sparse_vectors, sparse_to_sparsevec_literal
 
         logger.info("Generating sparse query vectors via FlagEmbedding...")
         sparse_vecs = generate_sparse_vectors(query_texts, batch_size=EMBEDDING_BATCH_SIZE)
-        query_sparse_literals = [sparse_to_sparsevec_literal(sv) for sv in sparse_vecs]
+        [sparse_to_sparsevec_literal(sv) for sv in sparse_vecs]
         logger.info("Sparse query vectors ready")
 
     # Evaluate each question
@@ -492,9 +496,15 @@ def evaluate_bucket(
         )
 
         try:
+            # Pass embedding=None to let service layer call generate_embedding_full()
+            # which auto-routes to three-signal path (dense+FTS+sparse) for ONNX
             metrics = evaluate_question(
-                question, cat, chat_id, profile, query_embeddings[i], top_k,
-                search_mode=search_mode, query_sparse=query_sparse_literals[i],
+                question,
+                cat,
+                chat_id,
+                profile,
+                query_embeddings[i],
+                top_k,
             )
             all_metrics.append(metrics)
             category_metrics.setdefault(cat, []).append(metrics)
@@ -646,15 +656,10 @@ def backfill_sparse_bucket(bucket: str, chat_ids: list[int] | None = None, batch
     backend = get_backend()
     profiles = backend.list_profiles()
     prefix = f"beam_{bucket}_"
-    target_profiles = [
-        p["profile"] for p in profiles if p["profile"].startswith(prefix)
-    ]
+    target_profiles = [p["profile"] for p in profiles if p["profile"].startswith(prefix)]
 
     if chat_ids:
-        target_profiles = [
-            p for p in target_profiles
-            if int(p.split("_")[-1]) in chat_ids
-        ]
+        target_profiles = [p for p in target_profiles if int(p.split("_")[-1]) in chat_ids]
 
     logger.info("Backfilling sparse vectors for %d profiles", len(target_profiles))
     total_updated = 0
@@ -675,8 +680,11 @@ def backfill_sparse_bucket(bucket: str, chat_ids: list[int] | None = None, batch
         stats = check_sparsevec_limits(sparse_vecs)
         logger.info(
             "    nnz stats: min=%d, max=%d, mean=%.0f, over_1000=%d (%.1f%%)",
-            stats["min_nnz"], stats["max_nnz"], stats["mean_nnz"],
-            stats["over_1000"], stats["pct_over_1000"],
+            stats["min_nnz"],
+            stats["max_nnz"],
+            stats["mean_nnz"],
+            stats["over_1000"],
+            stats["pct_over_1000"],
         )
         if stats["over_1000"] > 0:
             logger.warning(
@@ -735,7 +743,7 @@ def compare_results(bucket: str):
     # Overall
     print("\nOverall:")
     print(f"  {'Metric':<12s}  {'tsvector':>10s}  {'sparse':>10s}  {'delta':>10s}")
-    print(f"  {'-'*12}  {'-'*10}  {'-'*10}  {'-'*10}")
+    print(f"  {'-' * 12}  {'-' * 10}  {'-' * 10}  {'-' * 10}")
     for metric in ["recall@5", "recall@10", "recall@20", "recall@50", "ndcg@10", "mrr"]:
         tv_val = tv["overall"][metric]
         sp_val = sp["overall"][metric]
@@ -746,7 +754,7 @@ def compare_results(bucket: str):
     # Per category
     print("\nPer category (R@10):")
     print(f"  {'Category':<30s}  {'tsvector':>10s}  {'sparse':>10s}  {'delta':>10s}  {'n':>4s}")
-    print(f"  {'-'*30}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*4}")
+    print(f"  {'-' * 30}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 4}")
     for cat in ALL_CATEGORIES:
         tv_cat = tv["per_category"].get(cat, {})
         sp_cat = sp["per_category"].get(cat, {})
@@ -760,7 +768,7 @@ def compare_results(bucket: str):
     # Per category MRR
     print("\nPer category (MRR):")
     print(f"  {'Category':<30s}  {'tsvector':>10s}  {'sparse':>10s}  {'delta':>10s}")
-    print(f"  {'-'*30}  {'-'*10}  {'-'*10}  {'-'*10}")
+    print(f"  {'-' * 30}  {'-' * 10}  {'-' * 10}  {'-' * 10}")
     for cat in ALL_CATEGORIES:
         tv_cat = tv["per_category"].get(cat, {})
         sp_cat = sp["per_category"].get(cat, {})
@@ -806,8 +814,12 @@ Examples:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--ingest", action="store_true", help="Ingest conversations into Ogham")
     mode.add_argument("--eval", action="store_true", help="Run evaluation on ingested data")
-    mode.add_argument("--backfill-sparse", action="store_true", help="Backfill sparse vectors via FlagEmbedding")
-    mode.add_argument("--compare", action="store_true", help="Compare tsvector vs sparse eval results")
+    mode.add_argument(
+        "--backfill-sparse", action="store_true", help="Backfill sparse vectors via FlagEmbedding"
+    )
+    mode.add_argument(
+        "--compare", action="store_true", help="Compare tsvector vs sparse eval results"
+    )
     mode.add_argument("--cleanup", action="store_true", help="Delete benchmark profiles")
     mode.add_argument("--info", action="store_true", help="Show dataset info")
 
@@ -897,7 +909,11 @@ Examples:
 
     if args.eval:
         evaluate_bucket(
-            args.beam_dir, args.bucket, args.chat, args.category, args.top_k,
+            args.beam_dir,
+            args.bucket,
+            args.chat,
+            args.category,
+            args.top_k,
             search_mode=args.search_mode,
         )
         return

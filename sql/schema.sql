@@ -366,7 +366,8 @@ AS $function$
 with semantic as (
     select
         m.id,
-        (1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512)))::float as similarity
+        (1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512)))::float as similarity,
+        row_number() over (order by m.embedding::halfvec(512) <=> query_embedding::halfvec(512)) as rank_ix
     from memories m
     where m.profile = filter_profile
       and (filter_tags is null or m.tags && filter_tags)
@@ -378,7 +379,8 @@ with semantic as (
 keyword as (
     select
         m.id,
-        ts_rank_cd(m.fts, websearch_to_tsquery(query_text))::float as keyword_rank
+        ts_rank_cd(m.fts, websearch_to_tsquery(query_text), 34)::float as keyword_rank,
+        row_number() over (order by ts_rank_cd(m.fts, websearch_to_tsquery(query_text), 34) desc) as rank_ix
     from memories m
     where m.profile = filter_profile
       and m.fts @@ websearch_to_tsquery(query_text)
@@ -393,9 +395,10 @@ fused as (
         coalesce(s.id, k.id) as id,
         coalesce(s.similarity, 0.0) as similarity,
         coalesce(k.keyword_rank, 0.0) as keyword_rank,
+        -- Reciprocal Rank Fusion: position-based, score-agnostic
         (
-            semantic_weight * coalesce(s.similarity, 0.0)
-            + full_text_weight * coalesce(k.keyword_rank, 0.0)
+            semantic_weight * (1.0 / (rrf_k + coalesce(s.rank_ix, match_count * 3)))
+            + full_text_weight * (1.0 / (rrf_k + coalesce(k.rank_ix, match_count * 3)))
         ) as score
     from semantic s
     full outer join keyword k on s.id = k.id
