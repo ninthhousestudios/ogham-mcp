@@ -47,6 +47,34 @@ if ! find /usr/lib/postgresql -name "vector.so" 2>/dev/null | grep -q .; then
     make && make install
 fi
 
+echo "=== Step 2b: VectorChord ==="
+# VectorChord adds native MaxSim (ColBERT late-interaction) indexing to postgres.
+# It installs alongside pgvector as a superset — reuses the vector type.
+# Pre-built .deb packages are available from GitHub releases.
+PG_VER_SHORT=$(pg_lsclusters -h | head -1 | awk '{print $1}')
+if ! su - postgres -c "psql -tc \"SELECT 1 FROM pg_available_extensions WHERE name='vchord'\"" 2>/dev/null | grep -q 1; then
+    echo "Installing VectorChord from pre-built .deb..."
+    VCHORD_VERSION="1.1.1"
+    VCHORD_TAG="v${VCHORD_VERSION}"
+    VCHORD_DEB="vchord-pg${PG_VER_SHORT}_${VCHORD_VERSION}_amd64.deb"
+    VCHORD_URL="https://github.com/tensorchord/VectorChord/releases/download/${VCHORD_TAG}/${VCHORD_DEB}"
+    cd /tmp
+    curl -fsSL -o "${VCHORD_DEB}" "${VCHORD_URL}" || {
+        echo "Failed to download VectorChord .deb. Trying to build from source..."
+        # Fallback: build from source (needs Rust toolchain)
+        if ! command -v cargo &>/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            source "$HOME/.cargo/env"
+        fi
+        git clone --depth 1 --branch "${VCHORD_VERSION}" https://github.com/tensorchord/VectorChord.git /tmp/VectorChord
+        cd /tmp/VectorChord
+        cargo install cargo-pgrx --version $(grep pgrx Cargo.toml | head -1 | grep -o '"[^"]*"' | tr -d '"') || true
+        cargo pgrx init --pg${PG_VER_SHORT}=$(which pg_config)
+        cargo pgrx install --sudo --release --pg-config=$(which pg_config)
+    }
+    dpkg -i "/tmp/${VCHORD_DEB}" 2>/dev/null || true
+fi
+
 echo "=== Step 3: Start postgres + create DB ==="
 PG_VER=$(pg_lsclusters -h | head -1 | awk '{print $1}')
 echo "Found PostgreSQL ${PG_VER}"
@@ -57,6 +85,7 @@ pg_ctlcluster "${PG_VER}" main start || true
 # ALTER USER with a password is the only reliable fix.
 su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='ogham'\" | grep -q 1 || createdb ogham"
 su - postgres -c "psql ogham -c 'CREATE EXTENSION IF NOT EXISTS vector'"
+su - postgres -c "psql ogham -c 'CREATE EXTENSION IF NOT EXISTS vchord CASCADE'"
 su - postgres -c "psql -c \"ALTER USER postgres PASSWORD 'postgres'\""
 
 # Reduce WAL retention — default lets WAL grow unbounded under heavy writes.
@@ -174,7 +203,8 @@ CREATE TABLE IF NOT EXISTS memories (
     original_content text,
     sparse_embedding sparsevec(250002),
     colbert_vectors bytea,
-    colbert_vectors_raw bytea
+    colbert_vectors_raw bytea,
+    colbert_tokens vector(128)[]
 );\""
 echo "memories table ready"
 
@@ -209,11 +239,15 @@ echo "Postgres compacted"
 echo ""
 echo "=== Setup complete ==="
 echo ""
-echo "Run the benchmark (OPENBLAS_NUM_THREADS is critical — without it scipy"
-echo "tries to spawn 64 threads and crashes on limited-vCPU pods):"
+echo "Run the ColBERT reranking benchmark (original):"
 echo ""
 echo "  cd ${REPO_DIR}"
 echo "  OPENBLAS_NUM_THREADS=4 uv run python scripts/run-benchmark-matrix.py \\"
+echo "      --beam-dir /tmp/BEAM --bucket 100K --mem-limit-gb 40"
+echo ""
+echo "Run the ColBERT retrieval benchmark (three-way RRF via VectorChord):"
+echo ""
+echo "  OPENBLAS_NUM_THREADS=4 uv run python scripts/run-colbert-retrieval-matrix.py \\"
 echo "      --beam-dir /tmp/BEAM --bucket 100K --mem-limit-gb 40"
 echo ""
 echo "Then generate tables:"
