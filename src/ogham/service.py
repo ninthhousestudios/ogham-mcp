@@ -14,9 +14,9 @@ from typing import Any
 from ogham.data.loader import get_direction_words
 from ogham.database import auto_link_memory as db_auto_link
 from ogham.database import get_profile_ttl as db_get_profile_ttl
-from ogham.database import hybrid_search_memories, hybrid_search_memories_sparse, record_access
+from ogham.database import hybrid_search_memories, record_access
 from ogham.database import store_memory as db_store
-from ogham.embeddings import generate_embedding, generate_embedding_full
+from ogham.embeddings import generate_embedding
 from ogham.extraction import (
     compute_importance,
     extract_dates,
@@ -79,11 +79,8 @@ def store_memory_enriched(
     importance = compute_importance(content, tags)
 
     # Generate embedding (skip if pre-computed, e.g. from gateway cache)
-    sparse_str: str | None = None
     if embedding is None:
-        embedding, sparse_str = generate_embedding_full(content)
-    else:
-        sparse_str = None
+        embedding = generate_embedding(content)
 
     # Compute surprise score: how novel is this vs existing memories?
     surprise = 0.5
@@ -118,7 +115,6 @@ def store_memory_enriched(
         importance=importance,
         recurrence_days=recurrence_days,
         surprise=surprise,
-        sparse_embedding=sparse_str,
     )
 
     response: dict[str, Any] = {
@@ -151,6 +147,7 @@ def search_memories_enriched(
     source: str | None = None,
     graph_depth: int = 0,
     embedding: list[float] | None = None,
+    profiles: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Full search pipeline: retrieve, rerank (optional), record access.
 
@@ -159,7 +156,9 @@ def search_memories_enriched(
     2. _maybe_rerank: optional FlashRank cross-encoder reranking (RERANK_ENABLED=true)
     3. Record access for retrieved memories
     """
-    results = _search_memories_raw(query, profile, limit, tags, source, graph_depth, embedding)
+    results = _search_memories_raw(
+        query, profile, limit, tags, source, graph_depth, embedding, profiles
+    )
 
     if results:
         results = _maybe_rerank(query, results, limit)
@@ -187,28 +186,27 @@ def _search_memories_raw(
     source: str | None = None,
     graph_depth: int = 0,
     embedding: list[float] | None = None,
+    profiles: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Retrieve memories via intent-aware search paths. No reranking, no access recording.
-
-    When the embedding provider is ONNX, sparse vectors are generated
-    automatically and the sparse hybrid search path is used.
-    """
-    query_sparse: str | None = None
+    """Retrieve memories via intent-aware search paths. No reranking, no access recording."""
     if embedding is None:
-        embedding, query_sparse = generate_embedding_full(query)
-
-    def _do_hybrid_search(q_text, q_emb, prof, lim, t, s):
-        """Route to sparse hybrid search when sparse vector is available."""
-        if query_sparse is not None:
-            return hybrid_search_memories_sparse(q_text, q_emb, query_sparse, prof, lim, t, s)
-        return hybrid_search_memories(q_text, q_emb, prof, lim, t, s)
+        embedding = generate_embedding(query)
 
     # Elastic K: set-queries (ordering, summary, multi-session) get 2x limit
+    # for broader coverage of scattered facts across the timeline.
     elastic_limit = limit * 2
 
     # Ordering queries: strided retrieval + entity threading + chronological sort
     if is_ordering_query(query):
-        results = _do_hybrid_search(query, embedding, profile, elastic_limit * 5, tags, source)
+        results = hybrid_search_memories(
+            query_text=query,
+            query_embedding=embedding,
+            profile=profile,
+            limit=elastic_limit * 5,
+            tags=tags,
+            source=source,
+            profiles=profiles,
+        )
         if results:
             strided = _strided_retrieval(results, elastic_limit * 2)
             threaded = _entity_thread(
@@ -225,7 +223,13 @@ def _search_memories_raw(
         bridge_results = _bridge_retrieval(query, profile, elastic_limit, tags, source)
         if bridge_results:
             results = _merge_bridge_results(
-                bridge_results, query, embedding, profile, elastic_limit, tags, source
+                bridge_results,
+                query,
+                embedding,
+                profile,
+                elastic_limit,
+                tags,
+                source,
             )
             if results:
                 results = _entity_thread(
@@ -235,7 +239,15 @@ def _search_memories_raw(
 
     # Broad summary queries: strided retrieval for timeline coverage
     if is_broad_summary_query(query):
-        results = _do_hybrid_search(query, embedding, profile, elastic_limit * 5, tags, source)
+        results = hybrid_search_memories(
+            query_text=query,
+            query_embedding=embedding,
+            profile=profile,
+            limit=elastic_limit * 5,
+            tags=tags,
+            source=source,
+            profiles=profiles,
+        )
         if results:
             results = _strided_retrieval(results, elastic_limit)
             results = _mmr_rerank(results, embedding, elastic_limit, lambda_param=0.5)
@@ -257,7 +269,15 @@ def _search_memories_raw(
             source=source,
         )
     else:
-        results = _do_hybrid_search(query, embedding, profile, fetch_limit, tags, source)
+        results = hybrid_search_memories(
+            query_text=query,
+            query_embedding=embedding,
+            profile=profile,
+            limit=fetch_limit,
+            tags=tags,
+            source=source,
+            profiles=profiles,
+        )
 
     # Single-anchor temporal re-ranking
     if results and has_temporal_intent(query):

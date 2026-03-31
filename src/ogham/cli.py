@@ -1,5 +1,6 @@
 """CLI interface for Ogham memory operations."""
 
+import json
 from typing import Optional
 
 import typer
@@ -46,7 +47,9 @@ def store(
     content: str = typer.Argument(help="The text content to remember"),
     profile: str = typer.Option(None, help="Profile to store in"),
     tags: Optional[list[str]] = typer.Option(None, "--tag", help="Tags for the memory"),
+    tags_csv: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags"),
     source: str = typer.Option("cli", help="Source identifier"),
+    output_json: bool = typer.Option(False, "--json", help="Output JSON instead of rich text"),
 ):
     """Store a new memory."""
     from datetime import datetime, timedelta, timezone
@@ -59,6 +62,10 @@ def store(
     target = profile or settings.default_profile
     embedding = generate_embedding(content)
 
+    merged_tags = list(tags or [])
+    if tags_csv:
+        merged_tags.extend(t.strip() for t in tags_csv.split(",") if t.strip())
+
     ttl_days = get_profile_ttl(target)
     expires_at = None
     if ttl_days is not None:
@@ -69,12 +76,45 @@ def store(
         embedding=embedding,
         profile=target,
         source=source,
-        tags=tags,
+        tags=merged_tags or None,
         expires_at=expires_at,
     )
+
+    if output_json:
+        print(json.dumps(result, default=str))
+        return
+
     console.print(f"[green]Stored memory {result['id']} in profile '{target}'[/green]")
     if expires_at:
         console.print(f"[dim]Expires: {expires_at[:19]}[/dim]")
+
+
+@app.command()
+def config(
+    output_json: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Show current runtime configuration (secrets masked)."""
+    from ogham.tools.stats import get_runtime_config
+
+    data = get_runtime_config()
+
+    if output_json:
+        print(json.dumps(data, default=str, indent=2))
+        return
+
+    for section, values in data.items():
+        if section == "config_sources":
+            console.print("\n[bold]Config loaded from:[/bold]")
+            for src in values:
+                console.print(f"  {src}")
+            continue
+        console.print(f"\n[bold]{section}[/bold]")
+        if isinstance(values, dict):
+            for k, v in values.items():
+                if v is not None:
+                    console.print(f"  {k}: {v}")
+        else:
+            console.print(f"  {values}")
 
 
 @app.command()
@@ -146,11 +186,17 @@ def search(
     limit: int = typer.Option(10, help="Max results"),
     profile: str = typer.Option(None, help="Profile to search"),
     tags: Optional[list[str]] = typer.Option(None, "--tag", help="Filter by tag"),
+    tags_csv: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags"),
+    output_json: bool = typer.Option(False, "--json", help="Output JSON instead of rich table"),
 ):
     """Search memories by meaning and keywords (hybrid search)."""
     from ogham.config import settings
     from ogham.database import hybrid_search_memories
     from ogham.embeddings import generate_embedding
+
+    merged_tags = list(tags or [])
+    if tags_csv:
+        merged_tags.extend(t.strip() for t in tags_csv.split(",") if t.strip())
 
     target = profile or settings.default_profile
     embedding = generate_embedding(query)
@@ -159,23 +205,32 @@ def search(
         query_embedding=embedding,
         profile=target,
         limit=limit,
-        tags=tags,
+        tags=merged_tags or None,
     )
 
     if not results:
-        console.print("[yellow]No matching memories found.[/yellow]")
+        if output_json:
+            print("[]")
+        else:
+            console.print("[yellow]No matching memories found.[/yellow]")
+        return
+
+    if output_json:
+        print(json.dumps(results, default=str))
         return
 
     table = Table(title=f"Search Results ({len(results)} matches)")
+    table.add_column("ID", width=8)
     table.add_column("Relevance", justify="right", width=10)
     table.add_column("Content")
     table.add_column("Tags")
 
     for r in results:
+        mem_id = str(r.get("id", ""))[:8]
         relevance = f"{r.get('relevance', 0):.3f}"
         content = r["content"][:120]
         tags_str = ", ".join(r.get("tags", []))
-        table.add_row(relevance, content, tags_str)
+        table.add_row(mem_id, relevance, content, tags_str)
 
     console.print(table)
 
@@ -185,20 +240,36 @@ def list_memories(
     limit: int = typer.Option(10, help="Max results"),
     profile: str = typer.Option(None, help="Profile to list"),
     tags: Optional[list[str]] = typer.Option(None, "--tag", help="Filter by tag"),
+    tags_csv: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags"),
     source: Optional[str] = typer.Option(None, help="Filter by source"),
+    output_json: bool = typer.Option(False, "--json", help="Output JSON instead of rich table"),
 ):
     """List recent memories."""
     from ogham.config import settings
     from ogham.database import list_recent_memories
 
+    merged_tags = list(tags or [])
+    if tags_csv:
+        merged_tags.extend(t.strip() for t in tags_csv.split(",") if t.strip())
+
     target = profile or settings.default_profile
-    results = list_recent_memories(profile=target, limit=limit, source=source, tags=tags)
+    results = list_recent_memories(
+        profile=target, limit=limit, source=source, tags=merged_tags or None
+    )
 
     if not results:
-        console.print("[yellow]No memories found.[/yellow]")
+        if output_json:
+            print("[]")
+        else:
+            console.print("[yellow]No memories found.[/yellow]")
+        return
+
+    if output_json:
+        print(json.dumps(results, default=str))
         return
 
     table = Table(title=f"Recent Memories ({len(results)})")
+    table.add_column("ID", width=8)
     table.add_column("Created", width=20)
     table.add_column("Content")
     table.add_column("Tags")
@@ -206,6 +277,7 @@ def list_memories(
 
     for r in results:
         table.add_row(
+            str(r.get("id", ""))[:8],
             r.get("created_at", "")[:19],
             r["content"][:100],
             ", ".join(r.get("tags", [])),
@@ -213,6 +285,56 @@ def list_memories(
         )
 
     console.print(table)
+
+
+@app.command()
+def delete(
+    memory_id: str = typer.Argument(help="Memory ID (full UUID or prefix)"),
+    profile: str = typer.Option(None, help="Profile the memory belongs to"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete a memory by ID."""
+    from ogham.config import settings
+    from ogham.database import delete_memory as db_delete
+
+    target = profile or settings.default_profile
+
+    if not yes:
+        confirm = typer.confirm(f"Delete memory {memory_id[:8]}... from '{target}'?")
+        if not confirm:
+            console.print("[yellow]Aborted.[/yellow]")
+            return
+
+    deleted = db_delete(memory_id, target)
+    if deleted:
+        console.print(f"[green]Deleted memory {memory_id[:8]}...[/green]")
+    else:
+        console.print(f"[red]Memory {memory_id[:8]}... not found in profile '{target}'.[/red]")
+
+
+@app.command()
+def use(
+    profile: str = typer.Argument(help="Profile name to set as default"),
+):
+    """Set the default profile for subsequent commands."""
+    from pathlib import Path
+
+    env_file = Path.home() / ".ogham" / ".env"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read existing env file or start fresh
+    env_vars = {}
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                env_vars[k.strip()] = v.strip()
+
+    env_vars["DEFAULT_PROFILE"] = profile
+
+    env_file.write_text("\n".join(f"{k}={v}" for k, v in env_vars.items()) + "\n")
+    console.print(f"[green]Default profile set to '{profile}'[/green]")
+    console.print(f"[dim]Saved to {env_file}[/dim]")
 
 
 @app.command()
@@ -327,9 +449,7 @@ def import_cmd(
 @app.command()
 def init(
     db_url: str = typer.Option(None, help="PostgreSQL connection string"),
-    provider: str = typer.Option(
-        None, help="Embedding provider (ollama/openai/voyage/mistral/gemini/onnx)"
-    ),
+    provider: str = typer.Option(None, help="Embedding provider (ollama/openai/voyage/mistral)"),
     api_key: str = typer.Option(None, help="Embedding provider API key"),
     backend: str = typer.Option(None, help="Database backend (supabase/postgres)"),
     supabase_url: str = typer.Option(None, help="Supabase project URL"),
@@ -356,97 +476,6 @@ def init(
         skip_clients=skip_clients,
         skip_test=skip_test,
     )
-
-
-@app.command("download-model")
-def download_model(
-    model: str = typer.Argument("bge-m3", help="Model to download (only bge-m3 supported)"),
-    path: Optional[str] = typer.Option(
-        None, "--path", help="Download directory (default: ~/.cache/ogham/bge-m3-onnx)"
-    ),
-):
-    """Download ONNX model files for local embedding."""
-    import os
-    import shutil
-    import tempfile
-    import zipfile
-    from pathlib import Path
-    from urllib.request import urlretrieve
-
-    from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TransferSpeedColumn
-
-    MODELS = {
-        "bge-m3": {
-            "url": "https://github.com/yuniko-software/bge-m3-onnx/releases/download/1.01/onnx.zip",
-            "default_dir": Path.home() / ".cache" / "ogham" / "bge-m3-onnx",
-            "expected_files": ["bge_m3_model.onnx", "bge_m3_model.onnx_data"],
-        },
-    }
-
-    if model not in MODELS:
-        console.print(f"[red]Unknown model '{model}'. Available: {', '.join(MODELS)}[/red]")
-        raise typer.Exit(1)
-
-    info = MODELS[model]
-    dest = Path(path) if path else info["default_dir"]
-
-    # Check if already downloaded
-    if all((dest / f).exists() for f in info["expected_files"]):
-        console.print(f"[green]Model '{model}' already exists at {dest}[/green]")
-        raise typer.Exit(0)
-
-    console.print(f"Downloading [bold]{model}[/bold] to {dest}...")
-
-    with Progress(
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        DownloadColumn(),
-        TransferSpeedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Downloading...", total=None)
-
-        def _reporthook(block_num, block_size, total_size):
-            if total_size > 0 and progress.tasks[task].total is None:
-                progress.update(task, total=total_size)
-            if total_size > 0:
-                done = min(block_num * block_size, total_size)
-            else:
-                done = block_num * block_size
-            progress.update(task, completed=done)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            zip_path = Path(tmpdir) / "model.zip"
-            urlretrieve(info["url"], zip_path, reporthook=_reporthook)  # noqa: S310
-
-            progress.update(task, description="Extracting...")
-            with zipfile.ZipFile(zip_path) as zf:
-                # Reject zip members with path traversal
-                for member in zf.namelist():
-                    if os.path.isabs(member) or ".." in member.split("/"):
-                        console.print(f"[red]Unsafe zip member: {member}[/red]")
-                        raise typer.Exit(1)
-                zf.extractall(tmpdir)
-
-            # The zip contains files at the top level or in a subdirectory —
-            # find the expected files and copy them to dest.
-            dest.mkdir(parents=True, exist_ok=True)
-            try:
-                for expected in info["expected_files"]:
-                    candidates = list(Path(tmpdir).rglob(expected))
-                    if not candidates:
-                        console.print(f"[red]Expected file '{expected}' not found in archive[/red]")
-                        raise typer.Exit(1)
-                    shutil.copy2(candidates[0], dest / expected)
-            except Exception:
-                # Clean up partial files on failure
-                for f in info["expected_files"]:
-                    (dest / f).unlink(missing_ok=True)
-                raise
-
-    console.print(f"[green]Model '{model}' downloaded to {dest}[/green]")
-    model_file = dest / info["expected_files"][0]
-    console.print(f"[dim]Set ONNX_MODEL_PATH={model_file} or use the default path.[/dim]")
 
 
 @app.command()

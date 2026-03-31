@@ -67,7 +67,6 @@ def store_memory(
     importance: float = 0.5,
     surprise: float = 0.5,
     recurrence_days: list[int] | None = None,
-    sparse_embedding: str | None = None,
 ) -> dict[str, Any]:
     return get_backend().store_memory(
         content,
@@ -80,7 +79,6 @@ def store_memory(
         importance=importance,
         surprise=surprise,
         recurrence_days=recurrence_days,
-        sparse_embedding=sparse_embedding,
     )
 
 
@@ -118,23 +116,10 @@ def hybrid_search_memories(
     limit: int | None = None,
     tags: list[str] | None = None,
     source: str | None = None,
+    profiles: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     return get_backend().hybrid_search_memories(
-        query_text, query_embedding, profile, limit, tags, source
-    )
-
-
-def hybrid_search_memories_sparse(
-    query_text: str,
-    query_embedding: list[float],
-    query_sparse: str,
-    profile: str,
-    limit: int | None = None,
-    tags: list[str] | None = None,
-    source: str | None = None,
-) -> list[dict[str, Any]]:
-    return get_backend().hybrid_search_memories_sparse(
-        query_text, query_embedding, query_sparse, profile, limit, tags, source
+        query_text, query_embedding, profile, limit, tags, source, profiles
     )
 
 

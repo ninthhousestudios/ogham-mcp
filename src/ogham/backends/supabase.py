@@ -55,7 +55,6 @@ class SupabaseBackend:
         importance: float = 0.5,
         surprise: float = 0.5,
         recurrence_days: list[int] | None = None,
-        sparse_embedding: str | None = None,
     ) -> dict[str, Any]:
         row = {
             "content": content,
@@ -138,6 +137,7 @@ class SupabaseBackend:
         limit: int | None = None,
         tags: list[str] | None = None,
         source: str | None = None,
+        profiles: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
             "query_text": query_text,
@@ -149,26 +149,11 @@ class SupabaseBackend:
             params["filter_tags"] = tags
         if source:
             params["filter_source"] = source
+        if profiles:
+            params["filter_profiles"] = profiles
 
         result = self._get_client().rpc("hybrid_search_memories", params).execute()
         return result.data
-
-    @with_retry(max_attempts=2, base_delay=0.3)
-    def hybrid_search_memories_sparse(
-        self,
-        query_text: str,
-        query_embedding: list[float],
-        query_sparse: str,
-        profile: str,
-        limit: int | None = None,
-        tags: list[str] | None = None,
-        source: str | None = None,
-    ) -> list[dict[str, Any]]:
-        # Supabase/PostgREST doesn't support sparsevec — fall back to dense hybrid search.
-        logger.debug("hybrid_search_memories_sparse: falling back to dense hybrid (supabase)")
-        return self.hybrid_search_memories(
-            query_text, query_embedding, profile, limit, tags, source
-        )
 
     @with_retry(max_attempts=2, base_delay=0.3)
     def list_recent_memories(

@@ -131,7 +131,6 @@ class PostgresBackend:
         importance: float = 0.5,
         surprise: float = 0.5,
         recurrence_days: list[int] | None = None,
-        sparse_embedding: str | None = None,
     ) -> dict[str, Any]:
         cols = [
             "content",
@@ -171,10 +170,6 @@ class PostgresBackend:
             cols.append("recurrence_days")
             vals.append("%(recurrence_days)s")
             params["recurrence_days"] = recurrence_days
-        if sparse_embedding is not None:
-            cols.append("sparse_embedding")
-            vals.append("%(sparse_embedding)s::sparsevec")
-            params["sparse_embedding"] = sparse_embedding
 
         sql = f"INSERT INTO memories ({', '.join(cols)}) VALUES ({', '.join(vals)}) RETURNING *"
         row = self._execute(sql, params, fetch="one")
@@ -308,6 +303,7 @@ class PostgresBackend:
         limit: int | None = None,
         tags: list[str] | None = None,
         source: str | None = None,
+        profiles: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
             "query_text": query_text,
@@ -316,39 +312,13 @@ class PostgresBackend:
             "profile": profile,
             "tags": tags,
             "source": source,
+            "profiles": profiles,
         }
         return self._execute(
             "SELECT * FROM hybrid_search_memories("
             "  %(query_text)s, %(embedding)s::vector, %(limit)s,"
-            "  %(profile)s, %(tags)s, %(source)s"
-            ")",
-            params,
-        )
-
-    @with_retry(max_attempts=2, base_delay=0.3)
-    def hybrid_search_memories_sparse(
-        self,
-        query_text: str,
-        query_embedding: list[float],
-        query_sparse: str,
-        profile: str,
-        limit: int | None = None,
-        tags: list[str] | None = None,
-        source: str | None = None,
-    ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {
-            "query_text": query_text,
-            "embedding": _embedding_literal(query_embedding),
-            "sparse": query_sparse,
-            "limit": limit or settings.default_match_count,
-            "profile": profile,
-            "tags": tags,
-            "source": source,
-        }
-        return self._execute(
-            "SELECT * FROM hybrid_search_memories_sparse("
-            "  %(query_text)s, %(embedding)s::vector, %(sparse)s::sparsevec, %(limit)s,"
-            "  %(profile)s, %(tags)s, %(source)s"
+            "  %(profile)s, %(tags)s, %(source)s,"
+            "  0.3, 0.7, 10, %(profiles)s"
             ")",
             params,
         )

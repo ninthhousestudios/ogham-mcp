@@ -325,7 +325,8 @@ CREATE OR REPLACE FUNCTION hybrid_search_memories(
     filter_source text DEFAULT NULL,
     full_text_weight float DEFAULT 0.3,
     semantic_weight float DEFAULT 0.7,
-    rrf_k integer DEFAULT 10
+    rrf_k integer DEFAULT 10,
+    filter_profiles text[] DEFAULT NULL
 )
 RETURNS TABLE(
     id uuid, content text, metadata jsonb, source text, profile text, tags text[],
@@ -342,7 +343,8 @@ with semantic as (
         (1 - (m.embedding::halfvec(512) <=> query_embedding::halfvec(512)))::float as similarity,
         row_number() over (order by m.embedding::halfvec(512) <=> query_embedding::halfvec(512)) as rank_ix
     from memories m
-    where m.profile = filter_profile
+    where (filter_profiles is not null and m.profile = any(filter_profiles)
+           or filter_profiles is null and m.profile = filter_profile)
       and (filter_tags is null or m.tags && filter_tags)
       and (filter_source is null or m.source = filter_source)
       and (m.expires_at is null or m.expires_at > now())
@@ -355,7 +357,8 @@ keyword as (
         ts_rank_cd(m.fts, websearch_to_tsquery(query_text), 34)::float as keyword_rank,
         row_number() over (order by ts_rank_cd(m.fts, websearch_to_tsquery(query_text), 34) desc) as rank_ix
     from memories m
-    where m.profile = filter_profile
+    where (filter_profiles is not null and m.profile = any(filter_profiles)
+           or filter_profiles is null and m.profile = filter_profile)
       and m.fts @@ websearch_to_tsquery(query_text)
       and (filter_tags is null or m.tags && filter_tags)
       and (filter_source is null or m.source = filter_source)
