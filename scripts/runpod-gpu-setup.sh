@@ -51,28 +51,31 @@ echo "=== Step 2b: VectorChord ==="
 # VectorChord adds native MaxSim (ColBERT late-interaction) indexing to postgres.
 # It installs alongside pgvector as a superset — reuses the vector type.
 # Pre-built .deb packages are available from GitHub releases.
+# Note: we check for the .so file on disk rather than querying pg_available_extensions,
+# because postgres may not be running yet at this point.
 PG_VER_SHORT=$(pg_lsclusters -h | head -1 | awk '{print $1}')
-if ! su - postgres -c "psql -tc \"SELECT 1 FROM pg_available_extensions WHERE name='vchord'\"" 2>/dev/null | grep -q 1; then
+if ! find /usr/lib/postgresql -name "vchord*.so" 2>/dev/null | grep -q .; then
     echo "Installing VectorChord from pre-built .deb..."
     VCHORD_VERSION="1.1.1"
     VCHORD_TAG="v${VCHORD_VERSION}"
     VCHORD_DEB="vchord-pg${PG_VER_SHORT}_${VCHORD_VERSION}_amd64.deb"
     VCHORD_URL="https://github.com/tensorchord/VectorChord/releases/download/${VCHORD_TAG}/${VCHORD_DEB}"
     cd /tmp
-    curl -fsSL -o "${VCHORD_DEB}" "${VCHORD_URL}" || {
+    if curl -fsSL -o "${VCHORD_DEB}" "${VCHORD_URL}"; then
+        dpkg -i "/tmp/${VCHORD_DEB}"
+    else
         echo "Failed to download VectorChord .deb. Trying to build from source..."
         # Fallback: build from source (needs Rust toolchain)
         if ! command -v cargo &>/dev/null; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             source "$HOME/.cargo/env"
         fi
-        git clone --depth 1 --branch "${VCHORD_VERSION}" https://github.com/tensorchord/VectorChord.git /tmp/VectorChord
+        git clone --depth 1 --branch "${VCHORD_TAG}" https://github.com/tensorchord/VectorChord.git /tmp/VectorChord
         cd /tmp/VectorChord
-        cargo install cargo-pgrx --version $(grep pgrx Cargo.toml | head -1 | grep -o '"[^"]*"' | tr -d '"') || true
+        cargo install cargo-pgrx --version $(grep pgrx Cargo.toml | head -1 | grep -o '"[^"]*"' | tr -d '"')
         cargo pgrx init --pg${PG_VER_SHORT}=$(which pg_config)
         cargo pgrx install --sudo --release --pg-config=$(which pg_config)
-    }
-    dpkg -i "/tmp/${VCHORD_DEB}" 2>/dev/null || true
+    fi
 fi
 
 echo "=== Step 3: Start postgres + create DB ==="
@@ -179,40 +182,21 @@ snapshot_download('yuniko-software/bge-m3-onnx', local_dir='${MODEL_DIR}')
 fi
 
 echo "=== Step 10: Create table + schema ==="
-# get_backend() auto-migration only adds columns — it doesn't create the table
-# or the search functions. We need both before ingest can work.
-
-# Create table first (IF NOT EXISTS so it's safe to re-run).
-su - postgres -c "psql ogham -c \"
-CREATE TABLE IF NOT EXISTS memories (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    content text NOT NULL,
-    embedding vector(1024),
-    profile text NOT NULL DEFAULT 'default',
-    source text,
-    tags text[] DEFAULT '{}',
-    metadata jsonb DEFAULT '{}',
-    created_at timestamptz DEFAULT now(),
-    updated_at timestamptz DEFAULT now(),
-    expires_at timestamptz,
-    importance integer DEFAULT 5,
-    access_count integer DEFAULT 0,
-    last_accessed_at timestamptz,
-    confidence real DEFAULT 0.7,
-    compression_level integer DEFAULT 0,
-    original_content text,
-    sparse_embedding sparsevec(250002),
-    colbert_vectors bytea,
-    colbert_vectors_raw bytea,
-    colbert_tokens vector(128)[]
-);\""
-echo "memories table ready"
-
-# Apply full schema — creates hybrid_search_memories and other functions.
+# Apply the full schema — creates the memories table, search functions, indexes.
 # Uses ON_ERROR_STOP=0 because CREATE TYPE relationship_type will fail if
 # it already exists, and we want to continue past that to create the functions.
 su - postgres -c "psql -v ON_ERROR_STOP=0 ogham < ${REPO_DIR}/sql/schema_postgres.sql"
-echo "Schema functions + indexes applied"
+echo "Schema applied (table + functions + indexes)"
+
+# Add benchmark-specific columns not in the main schema
+su - postgres -c "psql ogham -c 'ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_vectors bytea'"
+su - postgres -c "psql ogham -c 'ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_vectors_raw bytea'"
+echo "Benchmark columns added"
+
+# Apply ColBERT retrieval migration — adds colbert_tokens column, MaxSim index,
+# and the three-way RRF search function hybrid_search_memories_colbert().
+su - postgres -c "psql -v ON_ERROR_STOP=0 ogham < ${REPO_DIR}/sql/migrations/018_colbert_retrieval.sql"
+echo "ColBERT retrieval migration applied"
 
 echo "=== Step 11: Ingest BEAM dataset ==="
 echo "Ingesting all 100K bucket chats (dense + sparse embeddings)..."

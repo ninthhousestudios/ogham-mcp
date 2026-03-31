@@ -108,6 +108,10 @@ def populate_all(backend, pool_factor: int, precision: str) -> tuple[int, float]
             log.warning("Non-finite values in ColBERT vectors for id %s — skipping", row["id"])
             continue
 
+        if len(vecs) == 0:
+            log.warning("Empty token list for id %s — skipping", row["id"])
+            continue
+
         # Convert to postgres vector[] literal
         vec_literals = vectors_to_pg_array(vecs)
         n_tokens = len(vec_literals)

@@ -107,6 +107,10 @@ def populate_colbert_tokens(backend, pool_factor: int, precision: str) -> tuple[
             log.warning("Non-finite values in ColBERT vectors for id %s — skipping", row["id"])
             continue
 
+        if len(vecs) == 0:
+            log.warning("Empty token list for id %s — skipping", row["id"])
+            continue
+
         total_tokens += len(vecs)
 
         # Build postgres vector[] literal
@@ -151,6 +155,8 @@ def rebuild_maxsim_index(backend) -> float:
 
 def query_colbert_to_pg_array(query_vectors) -> str:
     """Convert query ColBERT vectors [n_tokens, 128] to postgres ARRAY literal."""
+    if len(query_vectors) == 0:
+        return "ARRAY[]::vector(128)[]"
     parts = []
     for v in query_vectors:
         vec_str = "[" + ",".join(f"{x:.6f}" for x in v) + "]"
@@ -393,7 +399,7 @@ def _save_results(output_path: Path, all_results: dict, args,
         "benchmark": "BEAM ColBERT retrieval matrix (three-way RRF via VectorChord)",
         "bucket": args.bucket,
         "top_k": args.top_k,
-        "total_configs": len(colbert_configs) + 1,  # +1 for baseline
+        "total_configs": len(colbert_configs) + (0 if args.skip_baseline else 1),
         "total_elapsed_seconds": round(total_elapsed, 1),
         "results": all_results,
     }

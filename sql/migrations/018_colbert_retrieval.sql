@@ -101,18 +101,26 @@ BEGIN
         ORDER BY m.colbert_tokens @# query_colbert_tokens DESC
         LIMIT match_count * 3
     ),
+    all_ids AS (
+        SELECT id FROM semantic
+        UNION
+        SELECT id FROM keyword
+        UNION
+        SELECT id FROM colbert
+    ),
     fused AS (
         SELECT
-            coalesce(s.id, k.id, c.id) AS id,
+            a.id,
             coalesce(1.0 / (rrf_k + s.rank), 0)::float
                 + coalesce(1.0 / (rrf_k + k.rank), 0)::float
                 + coalesce(1.0 / (rrf_k + c.rank), 0)::float AS rrf_score,
             coalesce(s.sim, 0)::float AS similarity,
             coalesce(k.kw_rank, 0)::float AS keyword_rank,
             coalesce(c.cb_score, 0)::float AS colbert_score
-        FROM semantic s
-        FULL OUTER JOIN keyword k ON s.id = k.id
-        FULL OUTER JOIN colbert c ON coalesce(s.id, k.id) = c.id
+        FROM all_ids a
+        LEFT JOIN semantic s ON a.id = s.id
+        LEFT JOIN keyword k ON a.id = k.id
+        LEFT JOIN colbert c ON a.id = c.id
     )
     SELECT
         m.id,
