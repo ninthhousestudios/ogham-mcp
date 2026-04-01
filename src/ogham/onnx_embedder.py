@@ -172,13 +172,19 @@ def _download_colbert_linear(dest: Path):
             with zf.open(weight_file) as f:
                 raw = f.read()
 
-            # bge-m3 colbert_linear.weight is float16, shape [128, 1024]
-            expected_bytes = 128 * 1024 * 2  # float16
-            if len(raw) == expected_bytes:
+            # bge-m3 colbert_linear.weight is [128, 1024].
+            # Detect dtype from file size: 128*1024 = 131072 elements
+            n_elements = 128 * 1024
+            nbytes = len(raw)
+            if nbytes == n_elements * 2:
                 weight = np.frombuffer(raw, dtype=np.float16).reshape(128, 1024).astype(np.float32)
-            else:
-                # float32 fallback
+            elif nbytes == n_elements * 4:
                 weight = np.frombuffer(raw, dtype=np.float32).reshape(128, 1024)
+            else:
+                raise ValueError(
+                    f"Unexpected colbert_linear data size: {nbytes} bytes "
+                    f"(expected {n_elements * 2} for fp16 or {n_elements * 4} for fp32)"
+                )
 
     np.save(dest, weight)
     logger.info("Saved colbert_linear weight to %s (%s)", dest, weight.shape)
