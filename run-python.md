@@ -1,4 +1,6 @@
 ```python
+uv run python -c
+"
 import zipfile, numpy as np
 from huggingface_hub import hf_hub_download
 pt = hf_hub_download(repo_id='BAAI/bge-m3', filename='colbert_linear.pt')
@@ -14,4 +16,5 @@ with zipfile.ZipFile(pt) as zf:
         for dtype, name in [(np.float16, 'fp16'), (np.float32, 'fp32')]:
             arr = np.frombuffer(raw, dtype=dtype)
             print(f'  as {name}: {arr.shape[0]} elements')
+"
 ```
