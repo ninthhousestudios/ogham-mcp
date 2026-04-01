@@ -98,12 +98,12 @@ def _get_model(model_path: str | None = None):
 
 
 def _get_colbert_linear():
-    """Lazy-load the colbert_linear projection weight from BAAI/bge-m3.
+    """Lazy-load the colbert_linear projection (weight + bias) from BAAI/bge-m3.
 
     The ONNX export (yuniko-software/bge-m3-onnx) omits the colbert_linear
     layer, so its third output is raw 1024-dim hidden states.  We download
-    just the projection weight from HuggingFace and apply it in Python:
-        projected = token_vecs @ W.T   (then L2-normalize)
+    the projection from HuggingFace and apply it in Python:
+        projected = token_vecs @ W.T + b   (then L2-normalize)
     """
     global _colbert_linear
     if _colbert_linear is not None:
@@ -115,24 +115,26 @@ def _get_colbert_linear():
 
         import numpy as np
 
-        weight_path = Path.home() / ".cache" / "ogham" / "bge-m3-onnx" / "colbert_linear.npy"
+        weight_path = Path.home() / ".cache" / "ogham" / "bge-m3-onnx" / "colbert_linear.npz"
 
         if not weight_path.exists():
-            logger.info("Downloading colbert_linear weight from BAAI/bge-m3...")
+            logger.info("Downloading colbert_linear from BAAI/bge-m3...")
             _download_colbert_linear(weight_path)
 
-        _colbert_linear = np.load(weight_path)  # [128, 1024] float32
-        logger.info("ColBERT projection loaded: %s", _colbert_linear.shape)
+        data = np.load(weight_path)
+        _colbert_linear = (data["weight"], data["bias"])  # ([1024, 1024], [1024])
+        logger.info("ColBERT projection loaded: weight=%s, bias=%s",
+                     _colbert_linear[0].shape, _colbert_linear[1].shape)
         return _colbert_linear
 
 
 def _download_colbert_linear(dest: Path):
-    """Download colbert_linear.pt from BAAI/bge-m3 and extract the weight.
+    """Download colbert_linear.pt from BAAI/bge-m3 and extract weight + bias.
 
     The colbert_linear projection is shipped as a separate ~2MB file
     (colbert_linear.pt) in the BAAI/bge-m3 repo, not inside pytorch_model.bin.
-    It's a torch.save'd dict with keys 'weight' [128, 1024] and 'bias' [128].
-    We extract just the weight and cache it as .npy.
+    It contains weight [1024, 1024] fp16 and bias [1024] fp16.
+    We save both as a single .npz for caching.
     """
     import numpy as np
 
@@ -153,49 +155,29 @@ def _download_colbert_linear(dest: Path):
 
         state = torch.load(pt_path, map_location="cpu", weights_only=True)
         weight = state["weight"].float().numpy()
+        bias = state["bias"].float().numpy()
     except ImportError:
-        # torch not installed — colbert_linear.pt is a small zip-of-pickles.
-        # We know the weight is [128, 1024] float16 (half), so just read the
-        # raw binary storage directly instead of fighting the pickle format.
+        # torch not installed — read raw binary storage from the zip directly.
+        # data/0 = weight [1024, 1024] fp16 (2097152 bytes)
+        # data/1 = bias [1024] fp16 (2048 bytes)
         import zipfile
 
         with zipfile.ZipFile(pt_path) as zf:
-            # Find the data files (raw tensor storage)
-            data_files = sorted(n for n in zf.namelist() if "/data/" in n and not n.endswith("/"))
-            if not data_files:
-                raise RuntimeError(f"No data/ entries in {pt_path}: {zf.namelist()}")
+            with zf.open("colbert_linear/data/0") as f:
+                weight = np.frombuffer(f.read(), dtype=np.float16).reshape(1024, 1024).astype(np.float32)
+            with zf.open("colbert_linear/data/1") as f:
+                bias = np.frombuffer(f.read(), dtype=np.float16).reshape(1024).astype(np.float32)
 
-            # The weight tensor is the largest data file (128*1024*2 = 262144 bytes)
-            sizes = {n: zf.getinfo(n).file_size for n in data_files}
-            weight_file = max(sizes, key=sizes.get)
-
-            with zf.open(weight_file) as f:
-                raw = f.read()
-
-            # bge-m3 colbert_linear.weight is [128, 1024].
-            # Detect dtype from file size: 128*1024 = 131072 elements
-            n_elements = 128 * 1024
-            nbytes = len(raw)
-            if nbytes == n_elements * 2:
-                weight = np.frombuffer(raw, dtype=np.float16).reshape(128, 1024).astype(np.float32)
-            elif nbytes == n_elements * 4:
-                weight = np.frombuffer(raw, dtype=np.float32).reshape(128, 1024)
-            else:
-                raise ValueError(
-                    f"Unexpected colbert_linear data size: {nbytes} bytes "
-                    f"(expected {n_elements * 2} for fp16 or {n_elements * 4} for fp32)"
-                )
-
-    np.save(dest, weight)
-    logger.info("Saved colbert_linear weight to %s (%s)", dest, weight.shape)
+    np.savez(dest, weight=weight, bias=bias)
+    logger.info("Saved colbert_linear to %s (weight=%s, bias=%s)", dest, weight.shape, bias.shape)
 
 
 def _apply_colbert_projection(token_vecs):
-    """Project 1024-dim hidden states to 128-dim ColBERT space + L2-normalize."""
+    """Project raw 1024-dim hidden states through colbert_linear + L2-normalize."""
     import numpy as np
 
-    W = _get_colbert_linear()  # [128, 1024]
-    projected = token_vecs @ W.T  # [n_tokens, 128]
+    W, b = _get_colbert_linear()  # [1024, 1024], [1024]
+    projected = token_vecs @ W.T + b  # [n_tokens, 1024]
     norms = np.linalg.norm(projected, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-12)
     return (projected / norms).astype(np.float32)
