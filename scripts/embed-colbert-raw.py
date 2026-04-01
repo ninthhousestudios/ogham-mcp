@@ -62,7 +62,7 @@ def embed_profile_raw(backend, profile: str, chunk_size: int, dry_run: bool) -> 
 
     import numpy as np
     from ogham.config import settings
-    from ogham.onnx_embedder import _get_model, pack_colbert_raw
+    from ogham.onnx_embedder import _apply_colbert_projection, _get_model, pack_colbert_raw
 
     log.info("  %s: embedding %d memories (raw f32) in chunks of %d", profile, total, chunk_size)
 
@@ -79,7 +79,7 @@ def embed_profile_raw(backend, profile: str, chunk_size: int, dry_run: bool) -> 
             input_ids = np.array([encoded.ids], dtype=np.int64)
             attention_mask = np.array([encoded.attention_mask], dtype=np.int64)
             outputs = session.run(None, {"input_ids": input_ids, "attention_mask": attention_mask})
-            colbert_vecs = outputs[2][0].astype(np.float32)
+            colbert_vecs = _apply_colbert_projection(outputs[2][0])
             raw_bytes = pack_colbert_raw(colbert_vecs)
 
             backend._execute(
