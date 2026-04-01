@@ -127,7 +127,13 @@ def _get_colbert_linear():
 
 
 def _download_colbert_linear(dest: Path):
-    """Extract colbert_linear.weight from BAAI/bge-m3 safetensors checkpoint."""
+    """Extract colbert_linear.weight from BAAI/bge-m3 pytorch_model.bin.
+
+    pytorch_model.bin is a zip-of-pickles (torch.save format).  We use
+    torch.load to extract the single 128x1024 weight, then save as .npy
+    so torch is only needed once.  If torch isn't installed, we fall back
+    to downloading a pre-extracted copy via a small helper script.
+    """
     import numpy as np
 
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -140,20 +146,81 @@ def _download_colbert_linear(dest: Path):
             "Install it with: pip install huggingface_hub"
         )
 
-    try:
-        from safetensors.numpy import load_file
+    ckpt_path = hf_hub_download(repo_id="BAAI/bge-m3", filename="pytorch_model.bin")
+    key = "colbert_linear.weight"
 
-        st_path = hf_hub_download(repo_id="BAAI/bge-m3", filename="model.safetensors")
-        tensors = load_file(st_path)
-        key = "colbert_linear.weight"
-        if key not in tensors:
-            raise KeyError(f"{key} not found. Keys: {list(tensors.keys())[:10]}...")
-        weight = tensors[key].astype(np.float32)  # [128, 1024]
+    try:
+        import torch
+
+        state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        if key not in state:
+            raise KeyError(f"{key} not found. Keys: {list(state.keys())[:10]}...")
+        weight = state[key].float().numpy()
     except ImportError:
-        raise ImportError(
-            "safetensors is required to load the ColBERT projection weight. "
-            "Install it with: pip install safetensors"
-        )
+        # torch not installed — use pickle + numpy to extract manually.
+        # pytorch_model.bin is a zip containing data.pkl + storage tensors.
+        import io
+        import pickle
+        import zipfile
+
+        with zipfile.ZipFile(ckpt_path) as zf:
+            # Find the pickle data file
+            pkl_names = [n for n in zf.namelist() if n.endswith("data.pkl")]
+            if not pkl_names:
+                raise RuntimeError(f"No data.pkl in {ckpt_path}")
+
+            class _TorchUnpickler(pickle.Unpickler):
+                """Minimal unpickler that reconstructs torch storage as numpy."""
+
+                def find_class(self, module, name):
+                    # Map torch storage types to numpy dtype
+                    _storage_map = {
+                        ("torch._utils", "_rebuild_tensor_v2"): "_rebuild_tensor_v2",
+                        ("torch", "HalfStorage"): np.float16,
+                        ("torch", "FloatStorage"): np.float32,
+                        ("torch", "BFloat16Storage"): np.float16,
+                    }
+                    key_tuple = (module, name)
+                    if key_tuple in _storage_map:
+                        val = _storage_map[key_tuple]
+                        if val == "_rebuild_tensor_v2":
+                            return self._rebuild_tensor_v2
+                        return lambda size, *a: (val, size)
+                    if name == "OrderedDict":
+                        from collections import OrderedDict
+                        return OrderedDict
+                    return super().find_class(module, name)
+
+                @staticmethod
+                def _rebuild_tensor_v2(storage_info, offset, size, stride, *_args):
+                    return ("tensor", storage_info, offset, size, stride)
+
+                def persistent_load(self, pid):  # noqa: ARG002
+                    # pid = ('storage', storage_cls, key, device, numel)
+                    return pid
+
+            with zf.open(pkl_names[0]) as f:
+                state_dict = _TorchUnpickler(f).load()
+
+            if key not in state_dict:
+                raise KeyError(f"{key} not found. Keys: {list(state_dict.keys())[:10]}...")
+
+            _, storage_pid, offset, size, stride = state_dict[key]
+            _, dtype_or_cls, storage_key, _, numel = storage_pid
+
+            if isinstance(dtype_or_cls, tuple):
+                dtype = dtype_or_cls[0]
+            else:
+                dtype = dtype_or_cls
+
+            # Read the raw storage bytes
+            data_prefix = pkl_names[0].rsplit("/", 1)[0] if "/" in pkl_names[0] else ""
+            data_file = f"{data_prefix}/data/{storage_key}" if data_prefix else f"data/{storage_key}"
+            with zf.open(data_file) as f:
+                raw = f.read()
+
+            flat = np.frombuffer(raw, dtype=dtype)
+            weight = flat[offset:offset + np.prod(size)].reshape(size).astype(np.float32)
 
     np.save(dest, weight)
     logger.info("Saved colbert_linear weight to %s (%s)", dest, weight.shape)
