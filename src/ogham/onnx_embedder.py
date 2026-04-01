@@ -37,6 +37,7 @@ class OnnxResult:
 
 _tokenizer = None
 _session = None
+_colbert_linear = None  # lazy-loaded ColBERT projection weight [128, 1024]
 _model_lock = threading.Lock()
 
 
@@ -96,6 +97,77 @@ def _get_model(model_path: str | None = None):
         return _tokenizer, _session
 
 
+def _get_colbert_linear():
+    """Lazy-load the colbert_linear projection weight from BAAI/bge-m3.
+
+    The ONNX export (yuniko-software/bge-m3-onnx) omits the colbert_linear
+    layer, so its third output is raw 1024-dim hidden states.  We download
+    just the projection weight from HuggingFace and apply it in Python:
+        projected = token_vecs @ W.T   (then L2-normalize)
+    """
+    global _colbert_linear
+    if _colbert_linear is not None:
+        return _colbert_linear
+
+    with _model_lock:
+        if _colbert_linear is not None:
+            return _colbert_linear
+
+        import numpy as np
+
+        weight_path = Path.home() / ".cache" / "ogham" / "bge-m3-onnx" / "colbert_linear.npy"
+
+        if not weight_path.exists():
+            logger.info("Downloading colbert_linear weight from BAAI/bge-m3...")
+            _download_colbert_linear(weight_path)
+
+        _colbert_linear = np.load(weight_path)  # [128, 1024] float32
+        logger.info("ColBERT projection loaded: %s", _colbert_linear.shape)
+        return _colbert_linear
+
+
+def _download_colbert_linear(dest: Path):
+    """Extract colbert_linear.weight from the PyTorch BAAI/bge-m3 checkpoint."""
+    import numpy as np
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        ckpt_path = hf_hub_download(
+            repo_id="BAAI/bge-m3",
+            filename="pytorch_model.bin",
+        )
+    except ImportError:
+        raise ImportError(
+            "huggingface_hub is required to download the ColBERT projection weight. "
+            "Install it with: pip install huggingface_hub"
+        )
+
+    import torch
+
+    state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    key = "colbert_linear.weight"
+    if key not in state:
+        raise KeyError(f"{key} not found in BAAI/bge-m3 checkpoint. Keys: {list(state.keys())[:10]}...")
+
+    weight = state[key].float().numpy()  # [128, 1024]
+    np.save(dest, weight)
+    logger.info("Saved colbert_linear weight to %s (%s)", dest, weight.shape)
+
+
+def _apply_colbert_projection(token_vecs):
+    """Project 1024-dim hidden states to 128-dim ColBERT space + L2-normalize."""
+    import numpy as np
+
+    W = _get_colbert_linear()  # [128, 1024]
+    projected = token_vecs @ W.T  # [n_tokens, 128]
+    norms = np.linalg.norm(projected, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-12)
+    return (projected / norms).astype(np.float32)
+
+
 # ── Encoding ──────────────────────────────────────────────────────────
 
 
@@ -127,7 +199,7 @@ def encode(text: str, model_path: str | None = None, *, include_colbert: bool = 
     # special token position, so take the full output as-is
     colbert_bytes = None
     if include_colbert:
-        token_vecs = colbert_vectors[0].astype(np.float32)
+        token_vecs = _apply_colbert_projection(colbert_vectors[0])
         colbert_bytes = pack_colbert(token_vecs)
 
     return OnnxResult(dense=dense, sparse=sparse, colbert=colbert_bytes)
@@ -426,8 +498,8 @@ def encode_query_colbert(text: str, model_path: str | None = None):
     input_ids = np.array([encoded.ids], dtype=np.int64)
     attention_mask = np.array([encoded.attention_mask], dtype=np.int64)
     outputs = session.run(None, {"input_ids": input_ids, "attention_mask": attention_mask})
-    colbert_vectors = outputs[2]  # [1, n_tokens, dim]
-    return colbert_vectors[0].astype(np.float32)
+    colbert_vectors = outputs[2]  # [1, n_tokens, 1024]
+    return _apply_colbert_projection(colbert_vectors[0])
 
 
 # ── Sparse format conversion ─────────────────────────────────────

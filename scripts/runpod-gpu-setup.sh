@@ -82,7 +82,14 @@ fi
 echo "=== Step 3: Start postgres + create DB ==="
 PG_VER=$(pg_lsclusters -h | head -1 | awk '{print $1}')
 echo "Found PostgreSQL ${PG_VER}"
-pg_ctlcluster "${PG_VER}" main start || true
+
+# VectorChord must be loaded at server start via shared_preload_libraries.
+PG_CONF="/etc/postgresql/${PG_VER}/main/postgresql.conf"
+if ! grep -q "shared_preload_libraries.*vchord" "${PG_CONF}" 2>/dev/null; then
+    echo "shared_preload_libraries = 'vchord'" >> "${PG_CONF}"
+fi
+
+pg_ctlcluster "${PG_VER}" main start || pg_ctlcluster "${PG_VER}" main restart
 
 # TCP auth uses scram-sha-256 by default. Adding trust to pg_hba.conf
 # doesn't work (first matching rule wins, scram line is above).
