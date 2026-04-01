@@ -2,7 +2,7 @@
 """Populate colbert_tokens (vector[]) column from raw ColBERT bytea vectors.
 
 Converts ogham's custom-packed colbert_vectors_raw (float32 bytea) into
-pgvector vector(128)[] arrays suitable for VectorChord's vchordrq MaxSim index.
+pgvector vector(1024)[] arrays suitable for VectorChord's vchordrq MaxSim index.
 
 Supports pooling and quantization — the same compression matrix as the
 reranking benchmark, but stored in VectorChord's native format instead of
@@ -42,7 +42,7 @@ def vectors_to_pg_array(vectors) -> list[str]:
     """Convert [n_tokens, dim] numpy array to unquoted vector literal strings.
 
     Returns a list of strings like '[0.1,0.2,...]' — callers must wrap each
-    in single quotes and ::vector(128) cast for SQL use.
+    in single quotes and ::vector(1024) cast for SQL use.
     """
     parts = []
     for row in vectors:
@@ -88,7 +88,7 @@ def populate_all(backend, pool_factor: int, precision: str) -> tuple[int, float]
 
         # Apply quantization (dequantized back to float32 for storage —
         # we want to measure quantization's effect on retrieval quality,
-        # and VectorChord stores vector(128) as float4 internally).
+        # and VectorChord stores vector(1024) as float4 internally).
         if precision == "int8_row":
             row_max = np.max(np.abs(vecs), axis=1)
             scales = np.maximum(row_max / 127.0, 1e-8)
@@ -119,7 +119,7 @@ def populate_all(backend, pool_factor: int, precision: str) -> tuple[int, float]
 
         # Build the SQL array expression
         array_expr = "ARRAY[" + ",".join(
-            f"'{v}'::vector(128)" for v in vec_literals
+            f"'{v}'::vector(1024)" for v in vec_literals
         ) + "]"
 
         backend._execute(
@@ -192,7 +192,7 @@ def main():
 
     # Ensure column exists
     backend._execute(
-        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_tokens vector(128)[]",
+        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_tokens vector(1024)[]",
         fetch="none",
     )
 

@@ -7,13 +7,13 @@
 -- Requires:
 --   - pgvector (vector type, HNSW index)
 --   - VectorChord (vchord extension, @# MaxSim operator, vchordrq index)
---   - colbert_tokens vector(128)[] column on memories table
+--   - colbert_tokens vector(1024)[] column on memories table
 --
 -- Apply with:
 --   psql -v ON_ERROR_STOP=0 ogham < sql/migrations/018_colbert_retrieval.sql
 
 -- Add colbert_tokens column if not present
-ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_tokens vector(128)[];
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_tokens vector(1024)[];
 
 -- Create VectorChord MaxSim index (vchordrq = IVF + RaBitQ)
 -- This index accelerates the @# operator for ColBERT late-interaction search.
@@ -26,7 +26,7 @@ CREATE INDEX memories_colbert_maxsim_idx
 CREATE OR REPLACE FUNCTION hybrid_search_memories_colbert(
     query_text text,
     query_embedding vector(1024),
-    query_colbert_tokens vector(128)[],
+    query_colbert_tokens vector(1024)[],
     match_count integer DEFAULT 10,
     filter_profile text DEFAULT 'default',
     filter_tags text[] DEFAULT NULL,

@@ -117,7 +117,7 @@ def populate_colbert_tokens(backend, pool_factor: int, precision: str) -> tuple[
         vec_parts = []
         for v in vecs:
             vec_str = "[" + ",".join(f"{x:.6f}" for x in v) + "]"
-            vec_parts.append(f"'{vec_str}'::vector(128)")
+            vec_parts.append(f"'{vec_str}'::vector(1024)")
         array_expr = "ARRAY[" + ",".join(vec_parts) + "]"
 
         backend._execute(
@@ -156,11 +156,11 @@ def rebuild_maxsim_index(backend) -> float:
 def query_colbert_to_pg_array(query_vectors) -> str:
     """Convert query ColBERT vectors [n_tokens, 128] to postgres ARRAY literal."""
     if len(query_vectors) == 0:
-        return "ARRAY[]::vector(128)[]"
+        return "ARRAY[]::vector(1024)[]"
     parts = []
     for v in query_vectors:
         vec_str = "[" + ",".join(f"{x:.6f}" for x in v) + "]"
-        parts.append(f"'{vec_str}'::vector(128)")
+        parts.append(f"'{vec_str}'::vector(1024)")
     return "ARRAY[" + ",".join(parts) + "]"
 
 
@@ -460,7 +460,7 @@ def main():
 
     # Ensure column and migration are applied
     backend._execute(
-        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_tokens vector(128)[]",
+        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS colbert_tokens vector(1024)[]",
         fetch="none",
     )
 
