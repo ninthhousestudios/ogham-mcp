@@ -1,0 +1,208 @@
+{
+  "benchmark": "BEAM ColBERT retrieval matrix (three-way RRF via VectorChord)",
+  "bucket": "100K",
+  "top_k": 10,
+  "total_configs": 2,
+  "total_elapsed_seconds": 1077.0,
+  "results": {
+    "baseline_two_way": {
+      "config": {
+        "search_mode": "tsvector",
+        "legs": 2
+      },
+      "overall": {
+        "recall@5": 0.519854797979798,
+        "recall@10": 0.5965811688311689,
+        "recall@20": 0.6805514971139971,
+        "recall@30": 0.7408246753246753,
+        "recall@50": 0.7625208333333333,
+        "ndcg@10": 0.38515425957047517,
+        "mrr": 0.4415861341933086
+      },
+      "latency": {
+        "search_ms_avg": 60.5,
+        "search_ms_p50": 60.7,
+        "search_ms_p95": 122.8,
+        "rerank_ms_avg": 0.0,
+        "rerank_ms_p50": 0.0,
+        "rerank_ms_p95": 0.0,
+        "total_ms_avg": 60.5,
+        "total_ms_p50": 60.7,
+        "total_ms_p95": 122.8
+      },
+      "per_category": {
+        "abstention": {
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.0,
+          "ndcg@10": 0.0,
+          "count": 40
+        },
+        "contradiction_resolution": {
+          "recall@5": 0.6837500000000001,
+          "recall@10": 0.80625,
+          "mrr": 0.741904761904762,
+          "ndcg@10": 0.6871269100202906,
+          "count": 40
+        },
+        "event_ordering": {
+          "recall@5": 0.103234126984127,
+          "recall@10": 0.15251984126984125,
+          "mrr": 0.22344281045751635,
+          "ndcg@10": 0.1368426173192236,
+          "count": 40
+        },
+        "information_extraction": {
+          "recall@5": 0.5125,
+          "recall@10": 0.6208333333333333,
+          "mrr": 0.4518327649362132,
+          "ndcg@10": 0.42915673244500585,
+          "count": 40
+        },
+        "instruction_following": {
+          "recall@5": 0.425,
+          "recall@10": 0.525,
+          "mrr": 0.27452415966386556,
+          "ndcg@10": 0.3152469692084716,
+          "count": 40
+        },
+        "knowledge_update": {
+          "recall@5": 0.7708333333333333,
+          "recall@10": 0.8416666666666666,
+          "mrr": 0.8154166666666667,
+          "ndcg@10": 0.7323695084609045,
+          "count": 40
+        },
+        "multi_session_reasoning": {
+          "recall@5": 0.36424242424242426,
+          "recall@10": 0.4694823232323232,
+          "mrr": 0.5208891450739277,
+          "ndcg@10": 0.36040757810390284,
+          "count": 40
+        },
+        "preference_following": {
+          "recall@5": 0.35833333333333334,
+          "recall@10": 0.4208333333333333,
+          "mrr": 0.2789371835993737,
+          "ndcg@10": 0.29228598758866314,
+          "count": 40
+        },
+        "summarization": {
+          "recall@5": 0.2181547619047619,
+          "recall@10": 0.3042261904761905,
+          "mrr": 0.31099718296409473,
+          "ndcg@10": 0.1742780991371135,
+          "count": 40
+        },
+        "temporal_reasoning": {
+          "recall@5": 0.7625,
+          "recall@10": 0.825,
+          "mrr": 0.7979166666666667,
+          "ndcg@10": 0.7238281934211761,
+          "count": 40
+        }
+      },
+      "questions_evaluated": 400,
+      "elapsed_seconds": 24.5
+    },
+    "retrieval_f32_pool4": {
+      "config": {
+        "precision": "f32",
+        "pool_factor": 4,
+        "search_mode": "colbert_retrieval",
+        "legs": 3
+      },
+      "avg_tokens_per_memory": 257.9,
+      "populate_seconds": 817.0,
+      "index_build_seconds": 43.8,
+      "overall": {
+        "recall@5": 0.3901271645021645,
+        "recall@10": 0.4598836129148629,
+        "recall@20": 0.5752208243145743,
+        "recall@50": 0.7228721590909091,
+        "ndcg@10": 0.259348944328133,
+        "mrr": 0.30305840140241097
+      },
+      "latency": {
+        "avg_search_ms": 241.9,
+        "p50_search_ms": 230.3,
+        "p95_search_ms": 375.1,
+        "max_search_ms": 659.6
+      },
+      "per_category": {
+        "abstention": {
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "ndcg@10": 0.0,
+          "mrr": 0.0,
+          "count": 40
+        },
+        "contradiction_resolution": {
+          "recall@5": 0.5045833333333334,
+          "recall@10": 0.5970833333333333,
+          "ndcg@10": 0.44500201042104326,
+          "mrr": 0.5008786231884058,
+          "count": 40
+        },
+        "event_ordering": {
+          "recall@5": 0.06875,
+          "recall@10": 0.1082638888888889,
+          "ndcg@10": 0.09241978736600269,
+          "mrr": 0.1621585371819733,
+          "count": 40
+        },
+        "information_extraction": {
+          "recall@5": 0.38333333333333336,
+          "recall@10": 0.4333333333333333,
+          "ndcg@10": 0.31593730563501354,
+          "mrr": 0.3570953752699649,
+          "count": 40
+        },
+        "instruction_following": {
+          "recall@5": 0.2125,
+          "recall@10": 0.3625,
+          "ndcg@10": 0.20265219336502605,
+          "mrr": 0.16611443662800074,
+          "count": 40
+        },
+        "knowledge_update": {
+          "recall@5": 0.5208333333333333,
+          "recall@10": 0.6208333333333333,
+          "ndcg@10": 0.5304775943004852,
+          "mrr": 0.5990106942129187,
+          "count": 40
+        },
+        "multi_session_reasoning": {
+          "recall@5": 0.27912878787878787,
+          "recall@10": 0.34954545454545455,
+          "ndcg@10": 0.24995832919670052,
+          "mrr": 0.3446095713059999,
+          "count": 40
+        },
+        "preference_following": {
+          "recall@5": 0.3125,
+          "recall@10": 0.325,
+          "ndcg@10": 0.22328454159113015,
+          "mrr": 0.22093826694366198,
+          "count": 40
+        },
+        "summarization": {
+          "recall@5": 0.21964285714285717,
+          "recall@10": 0.2647767857142857,
+          "ndcg@10": 0.13779905476716675,
+          "mrr": 0.2608953061990404,
+          "count": 40
+        },
+        "temporal_reasoning": {
+          "recall@5": 0.4,
+          "recall@10": 0.5375,
+          "ndcg@10": 0.39595862663876163,
+          "mrr": 0.418883203094144,
+          "count": 40
+        }
+      },
+      "questions_evaluated": 400,
+      "elapsed_seconds": 101.3
+    }
+  }
+}
