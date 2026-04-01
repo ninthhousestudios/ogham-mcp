@@ -207,9 +207,15 @@ Ogham has two entry points:
 ```bash
 ogham init                      # Interactive setup wizard
 ogham health                    # Check database + embedding provider
-ogham search "query"            # Search memories from the terminal
+ogham config                    # Show runtime configuration (secrets masked)
 ogham store "some fact"         # Store a memory
+ogham search "query"            # Search memories (hybrid: semantic + keyword)
+ogham search "q" --json         # JSON output for scripting
+ogham search "q" --tags "a,b"   # Filter by comma-separated tags
 ogham list                      # List recent memories
+ogham list --json               # JSON output
+ogham delete <id>               # Delete a memory by ID
+ogham use <profile>             # Switch default profile
 ogham profiles                  # List profiles and counts
 ogham stats                     # Profile statistics
 ogham export -o backup.json     # Export memories
@@ -222,6 +228,25 @@ ogham serve                     # Start MCP server (stdio, default)
 ogham serve --transport sse     # Start SSE server on port 8742
 ogham openapi                   # Generate OpenAPI spec
 ```
+
+### Multi-profile search
+
+Search across multiple profiles in a single query (v0.8.5+):
+
+```python
+# MCP tool
+hybrid_search(query="architecture decisions", profiles=["work", "shared"])
+
+# Python library
+from ogham.service import search_memories_enriched
+results = search_memories_enriched(
+    query="architecture decisions",
+    profile="work",
+    profiles=["work", "shared", "project-alpha"],
+)
+```
+
+When `profiles` is set, results include memories from all listed profiles with a `profile` field showing which profile each result came from.
 
 ## Configuration
 
@@ -321,7 +346,7 @@ ogham hooks install
 
 | Tool | Description | Key parameters |
 |------|-------------|----------------|
-| `hybrid_search` | Combined semantic + full-text search (RRF) | `query`, `limit`, `tags[]`, `graph_depth` |
+| `hybrid_search` | Combined semantic + full-text search (RRF) | `query`, `limit`, `tags[]`, `graph_depth`, `profiles[]` |
 | `list_recent` | List recent memories | `limit`, `profile` |
 | `find_related` | Find memories related to a given one | `memory_id`, `limit` |
 
@@ -356,6 +381,7 @@ ogham hooks install
 | `compress_old_memories` | Condense old inactive memories (full text to summary to tags) | -- |
 | `cleanup_expired` | Remove expired memories (TTL) | -- |
 | `health_check` | Check database and embedding connectivity | -- |
+| `get_config` | Show runtime configuration with masked secrets | -- |
 | `get_stats` | Memory counts, profiles, activity | -- |
 | `get_cache_stats` | Embedding cache hit rates | -- |
 
