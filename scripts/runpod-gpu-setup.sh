@@ -58,7 +58,7 @@ if ! find /usr/lib/postgresql -name "vchord*.so" 2>/dev/null | grep -q .; then
     echo "Installing VectorChord from pre-built .deb..."
     VCHORD_VERSION="1.1.1"
     VCHORD_TAG="${VCHORD_VERSION}"  # no 'v' prefix — VectorChord tags are bare semver
-    VCHORD_DEB="vchord-pg${PG_VER_SHORT}_${VCHORD_VERSION}_amd64.deb"
+    VCHORD_DEB="postgresql-${PG_VER_SHORT}-vchord_${VCHORD_VERSION}-1_amd64.deb"
     VCHORD_URL="https://github.com/tensorchord/VectorChord/releases/download/${VCHORD_TAG}/${VCHORD_DEB}"
     cd /tmp
     if curl -fsSL -o "${VCHORD_DEB}" "${VCHORD_URL}"; then
