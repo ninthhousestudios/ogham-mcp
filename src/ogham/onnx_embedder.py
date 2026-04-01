@@ -155,57 +155,30 @@ def _download_colbert_linear(dest: Path):
         weight = state["weight"].float().numpy()
     except ImportError:
         # torch not installed — colbert_linear.pt is a small zip-of-pickles.
-        import pickle
+        # We know the weight is [128, 1024] float16 (half), so just read the
+        # raw binary storage directly instead of fighting the pickle format.
         import zipfile
 
         with zipfile.ZipFile(pt_path) as zf:
-            pkl_names = [n for n in zf.namelist() if n.endswith("data.pkl")]
-            if not pkl_names:
-                raise RuntimeError(f"No data.pkl in {pt_path}")
+            # Find the data files (raw tensor storage)
+            data_files = sorted(n for n in zf.namelist() if "/data/" in n and not n.endswith("/"))
+            if not data_files:
+                raise RuntimeError(f"No data/ entries in {pt_path}: {zf.namelist()}")
 
-            class _TorchUnpickler(pickle.Unpickler):
-                """Minimal unpickler for torch checkpoint files."""
+            # The weight tensor is the largest data file (128*1024*2 = 262144 bytes)
+            sizes = {n: zf.getinfo(n).file_size for n in data_files}
+            weight_file = max(sizes, key=sizes.get)
 
-                def find_class(self, module, name):
-                    if (module, name) == ("torch._utils", "_rebuild_tensor_v2"):
-                        return self._rebuild_tensor_v2
-                    if module == "torch" and name.endswith("Storage"):
-                        dtype_map = {
-                            "HalfStorage": np.float16,
-                            "FloatStorage": np.float32,
-                            "BFloat16Storage": np.float16,
-                        }
-                        dt = dtype_map.get(name, np.float32)
-                        return lambda size, *a: (dt, size)
-                    if name == "OrderedDict":
-                        from collections import OrderedDict
-                        return OrderedDict
-                    return super().find_class(module, name)
-
-                @staticmethod
-                def _rebuild_tensor_v2(storage_info, offset, size, stride, *_args):
-                    return ("tensor", storage_info, offset, size, stride)
-
-                def persistent_load(self, pid):
-                    return pid
-
-            with zf.open(pkl_names[0]) as f:
-                state_dict = _TorchUnpickler(f).load()
-
-            if "weight" not in state_dict:
-                raise KeyError(f"'weight' not found. Keys: {list(state_dict.keys())}")
-
-            _, storage_pid, offset, size, stride = state_dict["weight"]
-            _, dtype_or_cls, storage_key, _, numel = storage_pid
-            dtype = dtype_or_cls[0] if isinstance(dtype_or_cls, tuple) else dtype_or_cls
-
-            data_prefix = pkl_names[0].rsplit("/", 1)[0] if "/" in pkl_names[0] else ""
-            data_file = f"{data_prefix}/data/{storage_key}" if data_prefix else f"data/{storage_key}"
-            with zf.open(data_file) as f:
+            with zf.open(weight_file) as f:
                 raw = f.read()
 
-            flat = np.frombuffer(raw, dtype=dtype)
-            weight = flat[offset:offset + np.prod(size)].reshape(size).astype(np.float32)
+            # bge-m3 colbert_linear.weight is float16, shape [128, 1024]
+            expected_bytes = 128 * 1024 * 2  # float16
+            if len(raw) == expected_bytes:
+                weight = np.frombuffer(raw, dtype=np.float16).reshape(128, 1024).astype(np.float32)
+            else:
+                # float32 fallback
+                weight = np.frombuffer(raw, dtype=np.float32).reshape(128, 1024)
 
     np.save(dest, weight)
     logger.info("Saved colbert_linear weight to %s (%s)", dest, weight.shape)
