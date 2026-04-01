@@ -102,11 +102,11 @@ BEGIN
         LIMIT match_count * 3
     ),
     all_ids AS (
-        SELECT id FROM semantic
+        SELECT semantic.id FROM semantic
         UNION
-        SELECT id FROM keyword
+        SELECT keyword.id FROM keyword
         UNION
-        SELECT id FROM colbert
+        SELECT colbert.id FROM colbert
     ),
     fused AS (
         SELECT
