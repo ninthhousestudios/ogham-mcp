@@ -127,32 +127,34 @@ def _get_colbert_linear():
 
 
 def _download_colbert_linear(dest: Path):
-    """Extract colbert_linear.weight from the PyTorch BAAI/bge-m3 checkpoint."""
+    """Extract colbert_linear.weight from BAAI/bge-m3 safetensors checkpoint."""
     import numpy as np
 
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         from huggingface_hub import hf_hub_download
-
-        ckpt_path = hf_hub_download(
-            repo_id="BAAI/bge-m3",
-            filename="pytorch_model.bin",
-        )
     except ImportError:
         raise ImportError(
             "huggingface_hub is required to download the ColBERT projection weight. "
             "Install it with: pip install huggingface_hub"
         )
 
-    import torch
+    try:
+        from safetensors.numpy import load_file
 
-    state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    key = "colbert_linear.weight"
-    if key not in state:
-        raise KeyError(f"{key} not found in BAAI/bge-m3 checkpoint. Keys: {list(state.keys())[:10]}...")
+        st_path = hf_hub_download(repo_id="BAAI/bge-m3", filename="model.safetensors")
+        tensors = load_file(st_path)
+        key = "colbert_linear.weight"
+        if key not in tensors:
+            raise KeyError(f"{key} not found. Keys: {list(tensors.keys())[:10]}...")
+        weight = tensors[key].astype(np.float32)  # [128, 1024]
+    except ImportError:
+        raise ImportError(
+            "safetensors is required to load the ColBERT projection weight. "
+            "Install it with: pip install safetensors"
+        )
 
-    weight = state[key].float().numpy()  # [128, 1024]
     np.save(dest, weight)
     logger.info("Saved colbert_linear weight to %s (%s)", dest, weight.shape)
 
