@@ -27,9 +27,9 @@
 
 ## Retrieval quality
 
-**87.4% QA accuracy** on [LongMemEval](https://arxiv.org/abs/2410.10813) (500 questions, ICLR 2025) -- 437/500 questions answered correctly by gpt-5.4-nano reading from Ogham's retrieved memories. Retrieval R@10: 97% (Voyage) / 93% (Gemini). No LLM in the search or enrichment pipeline -- one PostgreSQL query with [Reciprocal Rank Fusion](https://ogham-mcp.dev/blog/rrf-fusion/) plus pure-regex entity extraction at ingest.
+**91.8% QA accuracy** on [LongMemEval](https://arxiv.org/abs/2410.10813) (500 questions, ICLR 2025) -- 459/500 questions answered correctly by gpt-5.4-mini with reasoning, reading from Ogham's retrieved memories. Retrieval R@10: 97.2%. Up from 62.4% baseline through context engineering -- timeline tables, multilingual entity extraction across 18 languages, session boundary headers, preference detection. No fine-tuning, no model training. [Full write-up](https://ogham-mcp.dev/blog/longmemeval-92/).
 
-**0.69 R@10 on [BEAM](https://arxiv.org/abs/2510.27246)** (400 questions across 10 memory abilities, ICLR 2026). With optional [FlashRank reranking](#cross-encoder-reranking): 0.70 R@10. [Full benchmark](https://ogham-mcp.dev/blog/beam-benchmarks/).
+**0.554 nugget score on [BEAM](https://arxiv.org/abs/2510.27246) 100K** (400 questions across 10 memory abilities, ICLR 2026), using the paper's exact judge prompt from Appendix G. The published baseline is 0.358 (Llama-4-Maverick + LIGHT). Retrieval R@10: 0.737. Seven of nine categories beat the paper. [Full write-up](https://ogham-mcp.dev/blog/beam-benchmark-v090/).
 
 **End-to-end QA accuracy** on LongMemEval (retrieval + LLM reads and answers):
 
@@ -37,6 +37,7 @@
 |--------|----------|-------------|
 | [OMEGA](https://dev.to/singularityjason/how-i-built-a-memory-system-that-scores-954-on-longmemeval-1-on-the-leaderboard-2md3) | 95.4% | Classification + extraction pipeline |
 | [Observational Memory (Mastra)](https://mastra.ai/research/observational-memory) | 94.9% | Observation extraction + GPT-5-mini |
+| **Ogham v0.9.1** | **91.8%** | Hybrid search + context engineering + gpt-5.4-mini |
 | [Hindsight (Vectorize)](https://venturebeat.com/data/with-91-accuracy-open-source-hindsight-agentic-memory-provides-20-20-vision) | 91.4% | 4 memory types + Gemini-3 |
 | [Zep (Graphiti)](https://blog.getzep.com/state-of-the-art-agent-memory/) | 71.2% | Temporal knowledge graph + GPT-4o |
 | [Mem0](https://mem0.ai) | 49.0% | RAG-based |

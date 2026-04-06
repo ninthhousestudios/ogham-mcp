@@ -404,3 +404,26 @@ quantity_units:
   - rounds
   - séries
   - série
+
+preference_words:
+  - preferir
+  - preferido
+  - "preferência"
+  - favorito
+  - favorita
+  - gostar
+  - gostado
+  - curtir
+  - curtido
+  - adorar
+  - adorado
+  - melhor que
+  - melhor
+  - odiar
+  - odiado
+  - evitar
+  - recomendar
+  - recomendado
+  - normalmente
+  - geralmente
+  - costumo

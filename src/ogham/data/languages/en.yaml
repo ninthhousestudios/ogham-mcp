@@ -414,3 +414,33 @@ quantity_units:
   - rep
   - laps
   - lap
+
+preference_words:
+  - prefer
+  - preferred
+  - preference
+  - favorite
+  - favourite
+  - like
+  - liked
+  - love
+  - loved
+  - enjoy
+  - enjoyed
+  - always get
+  - go-to
+  - rather
+  - better than
+  - best
+  - hate
+  - hated
+  - dislike
+  - disliked
+  - avoid
+  - can't stand
+  - recommend
+  - recommended
+  - suggestion
+  - usually
+  - typically
+  - tend to

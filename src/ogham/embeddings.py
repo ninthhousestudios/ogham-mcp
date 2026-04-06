@@ -73,7 +73,7 @@ def _embed_onnx(text: str) -> list[float]:
     from ogham.onnx_embedder import encode
 
     result = encode(text, settings.onnx_model_path or None)
-    embedding = result["dense"]
+    embedding = result.dense
     _validate_dim(embedding)
     return embedding
 

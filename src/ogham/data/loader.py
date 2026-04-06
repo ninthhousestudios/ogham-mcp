@@ -233,6 +233,19 @@ def get_all_quantity_units() -> set[str]:
     return merged
 
 
+def get_preference_words(lang: str = "en") -> list[str]:
+    """Return preference trigger words for a language."""
+    return _load_language_file(lang).get("preference_words", [])
+
+
+def get_all_preference_words() -> set[str]:
+    """Return merged preference words from all languages."""
+    merged: set[str] = set()
+    for lang in _available_languages():
+        merged.update(get_preference_words(lang))
+    return merged
+
+
 def invalidate_cache() -> None:
     """Clear the language file LRU cache."""
     _load_language_file.cache_clear()

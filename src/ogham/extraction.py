@@ -21,6 +21,7 @@ from ogham.data.loader import (
     get_all_event_words,
     get_all_every_words,
     get_all_possessive_triggers,
+    get_all_preference_words,
     get_all_quantity_units,
     get_all_relationship_words,
     get_day_names,
@@ -488,6 +489,7 @@ _EMOTION_WORDS: set[str] = get_all_emotion_words()
 _RELATIONSHIP_WORDS: set[str] = get_all_relationship_words()
 _POSSESSIVE_TRIGGERS: set[str] = get_all_possessive_triggers()
 _QUANTITY_UNITS: set[str] = get_all_quantity_units()
+_PREFERENCE_WORDS: set[str] = get_all_preference_words()
 
 # GeoText for location extraction (pre-compiled city/country database from GeoNames)
 try:
@@ -553,6 +555,7 @@ def extract_entities(content: str) -> list[str]:
       emotion:frustrated
       relationship:sister
       quantity:3 tanks
+      preference:favorite
     """
     entities: set[str] = set()
 
@@ -598,7 +601,10 @@ def extract_entities(content: str) -> list[str]:
         # Non-ASCII (CJK, Arabic, Cyrillic, Devanagari, etc.) -- substring match
         if not word[0].isascii():
             return word in content_lower
-        # Latin script -- word-set match to avoid partial matches
+        # Multi-word phrases ("always get", "better than") -- substring match
+        if " " in word:
+            return word in content_lower
+        # Latin script single words -- word-set match to avoid partial matches
         return word in content_words
 
     # Events (cap 2)
@@ -672,6 +678,15 @@ def extract_entities(content: str) -> list[str]:
             break
         entities.add(f"quantity:{m.group(1)} {m.group(2).lower()}")
         qty_count += 1
+
+    # Preferences: detect stated preferences ("I prefer", "my favorite", etc.)
+    pref_count = 0
+    for word in _PREFERENCE_WORDS:
+        if pref_count >= 2:
+            break
+        if _match(word):
+            entities.add(f"preference:{word}")
+            pref_count += 1
 
     # Locations: GeoText city/country extraction (GeoNames database, no LLM)
     if _GeoText is not None:

@@ -439,3 +439,22 @@ quantity_units:
   - turlar
   - set
   - setler
+
+preference_words:
+  - tercih etmek
+  - tercih ederim
+  - favori
+  - sevmek
+  - seviyorum
+  - sevdim
+  - beğenmek
+  - beğeniyorum
+  - daha iyi
+  - en iyi
+  - nefret etmek
+  - "kaçınmak"
+  - tavsiye etmek
+  - tavsiye ederim
+  - genellikle
+  - her zaman
+  - "hep alırım"

@@ -236,6 +236,74 @@ def build_timeline_table(
     return "\n".join(lines)
 
 
+def format_results_with_sessions(
+    results: list[dict],
+    reference_date: datetime | None = None,
+    include_timeline: bool = True,
+) -> str:
+    """Format search results with session headers, entity tags, and optional timeline.
+
+    Produces a structured context string ready for LLM consumption:
+    - Timeline table at the top (if enough dated events)
+    - Session boundary headers between different conversation dates
+    - Entity and date annotations per memory
+
+    Args:
+        results: Search results from search_memories_enriched.
+        reference_date: Reference date for timeline "days ago" computation.
+        include_timeline: Whether to include the timeline table.
+
+    Returns:
+        Formatted context string with session headers and annotations.
+    """
+    parts = []
+
+    if include_timeline:
+        timeline = build_timeline_table(results, reference_date=reference_date)
+        if timeline:
+            parts.append(timeline)
+            parts.append("")
+
+    current_session = None
+    for idx, r in enumerate(results, 1):
+        content = r.get("content", "")
+        if not content:
+            continue
+
+        # Detect session date from metadata or content prefix
+        meta = r.get("metadata") or {}
+        session_date = meta.get("date")
+        if not session_date:
+            import re
+
+            date_match = re.match(r"\[Date:\s*([^\]]+)\]", content)
+            if date_match:
+                session_date = date_match.group(1).strip()
+            elif r.get("created_at"):
+                session_date = str(r["created_at"])[:10]
+
+        if session_date and session_date != current_session:
+            parts.append(f"\n=== SESSION: {session_date} ===")
+            current_session = session_date
+
+        # Entity and date annotations
+        entity_tags = extract_entities(content)
+        dates = extract_dates(content)
+
+        annotations = []
+        if entity_tags:
+            annotations.append(f"Entities: {', '.join(entity_tags)}")
+        if dates:
+            annotations.append(f"Dates: {', '.join(dates)}")
+
+        if annotations:
+            parts.append(f"[Memory {idx}] {content}\n[{' | '.join(annotations)}]")
+        else:
+            parts.append(f"[Memory {idx}] {content}")
+
+    return "\n---\n".join(parts)
+
+
 def _reorder_for_attention(results: list[dict]) -> list[dict]:
     """Reorder results to combat 'Lost in the Middle' (Liu et al. 2023).
 

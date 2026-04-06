@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     temporal_llm_model: str = ""
 
     rerank_enabled: bool = False
+    rerank_model: str = "flashrank"  # "flashrank" or "bge"
     rerank_alpha: float = 0.55
 
     bare_postgrest: bool = False

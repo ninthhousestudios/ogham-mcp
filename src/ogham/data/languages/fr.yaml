@@ -347,3 +347,29 @@ quantity_units:
   - cours
   - tours
   - "séries"
+
+preference_words:
+  - "préférer"
+  - "préfère"
+  - "préféré"
+  - "préférence"
+  - favori
+  - favorite
+  - aimer
+  - aime
+  - aimé
+  - adorer
+  - adore
+  - adoré
+  - "j'adore"
+  - "plutôt"
+  - mieux que
+  - meilleur
+  - "détester"
+  - "déteste"
+  - "éviter"
+  - recommander
+  - recommande
+  - "recommandé"
+  - habituellement
+  - "d'habitude"
