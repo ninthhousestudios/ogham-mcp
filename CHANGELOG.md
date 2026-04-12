@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.9.2] - 2026-04-12
+
+### Fixed
+- **Hybrid search upgrade-path regression** — on every `sql/upgrade.sh` run, `hybrid_search_memories` was left with a raw-score linear-combination fusion formula (`semantic_weight * similarity + full_text_weight * keyword_rank`) instead of true Reciprocal Rank Fusion. Two sources contributed: `sql/migrations/013_halfvec_compression.sql` recreated the function body with the broken formula, and the unnumbered `sql/migrations/update_search_function.sql` sorted after `017_rrf_bm25.sql` alphabetically and reinforced it. Meanwhile `017_rrf_bm25.sql` itself was comment-only and did nothing. Users who fresh-installed via `sql/schema.sql` or `sql/schema_postgres.sql` were unaffected; users who upgraded via `upgrade.sh` between v0.8.3 and v0.9.1 received degraded hybrid search. The reported v0.9.1 benchmark numbers (R@10 0.972, LongMemEval QA 0.918) apply to fresh installs only. Fix: `update_search_function.sql` removed, `017_rrf_bm25.sql` rewritten as a functional migration that restores RRF, drops the 9-param overload introduced by 013 to prevent Postgres function-resolution ambiguity, and is a halfvec-gated safe no-op on Supabase Cloud (768-dim) deployments.
+- **`test_extract_entities_cap`** asserted `<= 15` but `extract_entities()` caps at 20. Assertion and fixture corrected to match code.
+
+### Changed
+- **`sql/schema_selfhost_supabase.sql` hybrid_search_memories defaults** — `full_text_weight=1.0, semantic_weight=1.0, rrf_k=60` → `0.3, 0.7, 10`. Empirically-tuned values from `schema.sql` / `schema_postgres.sql` had never been propagated to the self-hosted-Supabase schema. Formula shape (Cormack-original RRF via UNION+GROUP+SUM) unchanged — it is functionally valid RRF, just a different variant than the FULL-OUTER-JOIN form in the other two schemas.
+- **`geotext` import** in `src/ogham/extraction.py` hoisted to top-level. The soft-import guard (`try: from geotext import GeoText / except ImportError: _GeoText = None`) was vestigial — `geotext>=0.4` has been a hard dependency since v0.9.0 (`pyproject.toml:17`).
+
+### Migration housekeeping
+- Duplicate `008` collision resolved: `sql/migrations/008_ccf_search.sql` → `008a_ccf_search.sql`. `008_memory_relationships.sql` creates the `memory_relationships` table; `008a_ccf_search.sql` creates `hybrid_search_memories` which references that table. Alphabetical sort now executes them in the correct order.
+
+### Schema upgrade note
+Users affected by the hybrid-search regression should re-run `sql/migrations/017_rrf_bm25.sql` after pulling v0.9.2. No data migration required. Fresh installs do nothing.
+
 ## [0.9.1] - 2026-04-08
 
 ### Fixed

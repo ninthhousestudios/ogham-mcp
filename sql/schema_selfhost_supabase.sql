@@ -351,9 +351,9 @@ create or replace function hybrid_search_memories(
     filter_profile text default 'default',
     filter_tags text[] default null,
     filter_source text default null,
-    full_text_weight float default 1.0,
-    semantic_weight float default 1.0,
-    rrf_k int default 60,
+    full_text_weight float default 0.3,
+    semantic_weight float default 0.7,
+    rrf_k int default 10,
     filter_profiles text[] default null
 )
 returns table (

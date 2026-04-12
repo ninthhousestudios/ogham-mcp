@@ -22,6 +22,7 @@
 - [Cross-encoder reranking](#cross-encoder-reranking) -- optional FlashRank for self-hosters
 - [ONNX local embeddings](#onnx-local-embeddings) -- BGE-M3 dense + sparse, no API costs
 - [Database setup](#database-setup) -- Supabase, Neon, vanilla Postgres
+  - [Upgrading from v0.9.1 or earlier](#upgrading-from-v091-or-earlier) -- RRF regression fix
   - [Upgrading from v0.4.x](#upgrading-from-v04x)
 - [Architecture](#architecture)
 
@@ -494,6 +495,21 @@ Supabase and Neon both include pgvector out of the box -- no extra setup needed.
 
 For Postgres, set `DATABASE_BACKEND=postgres` and `DATABASE_URL=postgresql://...` in your environment.
 
+### Upgrading from v0.9.1 or earlier
+
+v0.9.1 and earlier shipped a migration-ordering bug that left users running `sql/upgrade.sh` with a raw-score linear-combination hybrid-search fusion formula instead of true Reciprocal Rank Fusion. Fresh installs via `sql/schema.sql` or `sql/schema_postgres.sql` were unaffected. To remediate after pulling v0.9.2:
+
+```bash
+# Halfvec deployments (Postgres/Neon self-host, self-hosted Supabase):
+./sql/upgrade.sh $DATABASE_URL   # re-runs 017_rrf_bm25.sql, which now restores RRF in-place
+
+# Supabase Cloud (768-dim vector, non-halfvec):
+# Re-paste sql/schema.sql into the SQL Editor. Migration 017 logs a NOTICE and exits
+# without touching Supabase Cloud deployments, so the schema file is the canonical path.
+```
+
+No data migration is required. See CHANGELOG [0.9.2] for details.
+
 ### Upgrading from v0.4.x
 
 If you already have an Ogham database, run the upgrade script to add temporal columns, halfvec compression, and lz4:
@@ -513,7 +529,7 @@ psql $DATABASE_URL -f sql/migrations/017_rrf_bm25.sql
 # Supabase: paste each migration file into the SQL Editor
 ```
 
-Migration 016 adds the `sparse_embedding` column for ONNX BGE-M3 sparse vectors. Migration 017 upgrades the search function to true Reciprocal Rank Fusion with length-normalised keyword scoring -- re-run your schema file to apply.
+Migration 016 adds the `sparse_embedding` column for ONNX BGE-M3 sparse vectors. Migration 017 restores true Reciprocal Rank Fusion with length-normalised keyword scoring. On halfvec deployments it recreates `hybrid_search_memories` in place; on Supabase Cloud (768-dim `vector`) it logs a NOTICE and exits -- re-run `sql/schema.sql` there instead.
 
 All migrations are idempotent -- safe to re-run. The upgrade script checks your pgvector version and skips halfvec if pgvector is below 0.7.0.
 

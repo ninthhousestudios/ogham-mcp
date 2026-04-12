@@ -9,6 +9,7 @@ import re
 from datetime import datetime
 
 import parsedatetime
+from geotext import GeoText as _GeoText
 from stop_words import AVAILABLE_LANGUAGES, get_stop_words
 
 from ogham.data.loader import (
@@ -491,12 +492,6 @@ _POSSESSIVE_TRIGGERS: set[str] = get_all_possessive_triggers()
 _QUANTITY_UNITS: set[str] = get_all_quantity_units()
 _PREFERENCE_WORDS: set[str] = get_all_preference_words()
 
-# GeoText for location extraction (pre-compiled city/country database from GeoNames)
-try:
-    from geotext import GeoText as _GeoText
-except ImportError:
-    _GeoText = None
-
 # Pre-compile quantity pattern: number + unit, excluding years
 _QUANTITY_PATTERN = re.compile(
     r"\b(?!(?:19|20)\d{2}\b)(\d+(?:\.\d+)?)\s+("
@@ -689,21 +684,20 @@ def extract_entities(content: str) -> list[str]:
             pref_count += 1
 
     # Locations: GeoText city/country extraction (GeoNames database, no LLM)
-    if _GeoText is not None:
-        try:
-            places = _GeoText(content)
-            loc_count = 0
-            for city in places.cities:
-                if loc_count >= 2:
-                    break
-                entities.add(f"location:{city}")
-                loc_count += 1
-            for country in places.country_mentions:
-                if loc_count >= 3:
-                    break
-                entities.add(f"location:{country}")
-                loc_count += 1
-        except Exception:
-            logger.debug("GeoText extraction failed, skipping locations")
+    try:
+        places = _GeoText(content)
+        loc_count = 0
+        for city in places.cities:
+            if loc_count >= 2:
+                break
+            entities.add(f"location:{city}")
+            loc_count += 1
+        for country in places.country_mentions:
+            if loc_count >= 3:
+                break
+            entities.add(f"location:{country}")
+            loc_count += 1
+    except Exception:
+        logger.debug("GeoText extraction failed, skipping locations")
 
     return sorted(entities)[:20]

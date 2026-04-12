@@ -133,9 +133,9 @@ def test_extract_error_type():
 def test_extract_entities_cap():
     from ogham.extraction import extract_entities
 
-    content = " ".join(f"FooBar{i} BazQux{i}" for i in range(20))
+    content = " ".join(f"FooBar{i} BazQux{i}" for i in range(30))
     entities = extract_entities(content)
-    assert len(entities) <= 15
+    assert len(entities) <= 20
 
 
 def test_compute_importance_decision():
