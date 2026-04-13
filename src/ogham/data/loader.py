@@ -246,6 +246,19 @@ def get_all_preference_words() -> set[str]:
     return merged
 
 
+def get_query_filler(lang: str = "en") -> list[str]:
+    """Return query-specific filler words for a language."""
+    return _load_language_file(lang).get("query_filler", [])
+
+
+def get_all_query_filler() -> set[str]:
+    """Return merged query filler words from all languages."""
+    merged: set[str] = set()
+    for lang in _available_languages():
+        merged.update(get_query_filler(lang))
+    return merged
+
+
 def invalidate_cache() -> None:
     """Clear the language file LRU cache."""
     _load_language_file.cache_clear()

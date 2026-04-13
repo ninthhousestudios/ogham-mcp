@@ -123,6 +123,100 @@ word_numbers:
   a: 1
   an: 1
 
+# Words to strip during query reformulation. This is the SOLE source
+# of stopwords for reformulate_query() -- we do NOT use the stop_words
+# package here because it's too aggressive (kills "first", "move" etc).
+# Keep this list tight: only true function words and query-specific filler.
+query_filler:
+  # Pronouns
+  - i
+  - me
+  - my
+  - you
+  - your
+  - we
+  - our
+  - us
+  - he
+  - she
+  - it
+  - its
+  - they
+  - them
+  # Articles + determiners
+  - a
+  - an
+  - the
+  - this
+  - that
+  - these
+  - those
+  - some
+  - any
+  # Prepositions
+  - to
+  - of
+  - in
+  - on
+  - at
+  - by
+  - for
+  - with
+  - from
+  - into
+  - about
+  - up
+  # Auxiliary / linking verbs
+  - is
+  - was
+  - are
+  - were
+  - be
+  - been
+  - being
+  - do
+  - does
+  - did
+  - have
+  - has
+  - had
+  - can
+  - could
+  - will
+  - would
+  - should
+  # Question words
+  - what
+  - when
+  - where
+  - who
+  - why
+  - how
+  - which
+  - whose
+  - whom
+  # Query-specific filler (not in standard NLP lists)
+  - tell
+  - show
+  - give
+  - please
+  - mention
+  - only
+  - exactly
+  - just
+  - also
+  - really
+  - actually
+  - remember
+  - recall
+  - think
+  - know
+  - said
+  - talked
+  - discussed
+  - brought
+  - items
+
 query_hints:
   multi_hop:
     - "how many"

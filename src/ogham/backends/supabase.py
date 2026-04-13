@@ -138,7 +138,11 @@ class SupabaseBackend:
         tags: list[str] | None = None,
         source: str | None = None,
         profiles: list[str] | None = None,
+        query_entity_tags: list[str] | None = None,
+        recency_decay: float = 0.0,
     ) -> list[dict[str, Any]]:
+        # query_entity_tags and recency_decay are accepted for API parity
+        # with PostgresBackend but not yet implemented in the Supabase RPC.
         params: dict[str, Any] = {
             "query_text": query_text,
             "query_embedding": str(query_embedding),

@@ -191,6 +191,9 @@ def _get_gemini_client():
     return _gemini_client
 
 
+_EMBED_MAX_CHARS = 20000  # ~6-7K tokens at typical 3-4 chars/token, safe for 8191 token limit
+
+
 def _embed_gemini(text: str) -> list[float]:
     if not settings.gemini_api_key:
         raise ValueError("GEMINI_API_KEY required when embedding_provider=gemini")
@@ -346,19 +349,50 @@ def _embed_voyage_batch(texts: list[str]) -> list[list[float]]:
     return all_embeddings
 
 
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Detect Gemini 429/quota/503 errors that are worth retrying."""
+    msg = str(exc)
+    return (
+        "429" in msg
+        or "RESOURCE_EXHAUSTED" in msg
+        or "quota" in msg.lower()
+        or "503" in msg
+        or "UNAVAILABLE" in msg
+    )
+
+
 def _embed_gemini_batch(texts: list[str]) -> list[list[float]]:
     if not settings.gemini_api_key:
         raise ValueError("GEMINI_API_KEY required when embedding_provider=gemini")
     client = _get_gemini_client()
-    response = client.models.embed_content(
-        model=settings.gemini_embed_model,
-        contents=texts,
-        config={"output_dimensionality": settings.embedding_dim},
+
+    from tenacity import (
+        before_sleep_log,
+        retry,
+        retry_if_exception,
+        stop_after_attempt,
+        wait_exponential,
     )
-    embeddings = [e.values for e in response.embeddings]
-    for emb in embeddings:
-        _validate_dim(emb)
-    return embeddings
+
+    @retry(
+        retry=retry_if_exception(_is_rate_limit_error),
+        wait=wait_exponential(multiplier=3, min=3, max=90),
+        stop=stop_after_attempt(6),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    def _call():
+        response = client.models.embed_content(
+            model=settings.gemini_embed_model,
+            contents=texts,
+            config={"output_dimensionality": settings.embedding_dim},
+        )
+        embeddings = [e.values for e in response.embeddings]
+        for emb in embeddings:
+            _validate_dim(emb)
+        return embeddings
+
+    return _call()
 
 
 def clear_embedding_cache() -> int:

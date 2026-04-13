@@ -14,6 +14,31 @@ logger = logging.getLogger(__name__)
 _backend = None
 
 
+def set_tenant_context(tenant_id: str | None) -> None:
+    """Set the tenant ID for subsequent DB operations on this task / thread.
+
+    Multi-tenant deployments (e.g. the Ogham gateway) call this in their
+    request middleware after authenticating the caller. Self-hosted users
+    do not need to call this -- the default `None` is a no-op.
+
+    Currently only the PostgresBackend honours this contextvar. The Supabase
+    backend (PostgREST-based) is for self-hosted single-tenant use and does
+    not need or use it. If a multi-tenant deployment ever wants to use the
+    Supabase backend, it would need its own JWT-based scoping mechanism.
+    """
+    # Lazy import to avoid loading psycopg in self-hosted Supabase setups.
+    from ogham.backends.postgres import set_tenant_context as _set
+
+    _set(tenant_id)
+
+
+def get_tenant_context() -> str | None:
+    """Return the currently set tenant ID, or None."""
+    from ogham.backends.postgres import get_tenant_context as _get
+
+    return _get()
+
+
 def _reset_backend() -> None:
     """Reset the backend singleton. Used by tests."""
     global _backend
@@ -117,9 +142,19 @@ def hybrid_search_memories(
     tags: list[str] | None = None,
     source: str | None = None,
     profiles: list[str] | None = None,
+    query_entity_tags: list[str] | None = None,
+    recency_decay: float = 0.0,
 ) -> list[dict[str, Any]]:
     return get_backend().hybrid_search_memories(
-        query_text, query_embedding, profile, limit, tags, source, profiles
+        query_text,
+        query_embedding,
+        profile,
+        limit,
+        tags,
+        source,
+        profiles,
+        query_entity_tags=query_entity_tags,
+        recency_decay=recency_decay,
     )
 
 
@@ -211,6 +246,19 @@ def cleanup_expired(profile: str) -> int:
 
 def count_expired(profile: str) -> int:
     return get_backend().count_expired(profile)
+
+
+def spread_entity_activation(
+    entity_tags: list[str],
+    profile: str,
+    max_depth: int = 2,
+    decay: float = 0.65,
+    min_activation: float = 0.05,
+    max_results: int = 50,
+) -> list[dict[str, Any]]:
+    return get_backend().spread_entity_activation(
+        entity_tags, profile, max_depth, decay, min_activation, max_results
+    )
 
 
 def auto_link_memory(

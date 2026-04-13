@@ -14,7 +14,7 @@ from typing import Any
 from ogham.data.loader import get_direction_words
 from ogham.database import auto_link_memory as db_auto_link
 from ogham.database import get_profile_ttl as db_get_profile_ttl
-from ogham.database import hybrid_search_memories, record_access
+from ogham.database import hybrid_search_memories, record_access, spread_entity_activation
 from ogham.database import store_memory as db_store
 from ogham.embeddings import generate_embedding
 from ogham.extraction import (
@@ -344,6 +344,15 @@ def _search_memories_raw(
     if embedding is None:
         embedding = generate_embedding(query)
 
+    # Query reformulation disabled — global application regressed MRR (2026-04-10).
+    search_query = query
+
+    # Entity overlap boost: extract entity tags from the query and pass to SQL.
+    # Memories sharing entities with the query get up to 1.3x relevance boost.
+    # See docs/plans/2026-04-06-entity-graph-spreading-activation.md Stage 1.
+    query_entities = extract_entities(query)
+    query_entity_tags = query_entities if query_entities else None
+
     # Elastic K: set-queries (ordering, summary, multi-session) get 2x limit
     # for broader coverage of scattered facts across the timeline.
     elastic_limit = limit * 2
@@ -351,23 +360,21 @@ def _search_memories_raw(
     # Ordering queries: strided retrieval + entity threading + chronological sort
     if is_ordering_query(query):
         results = hybrid_search_memories(
-            query_text=query,
+            query_text=search_query,
             query_embedding=embedding,
             profile=profile,
             limit=elastic_limit * 5,
             tags=tags,
             source=source,
             profiles=profiles,
+            query_entity_tags=query_entity_tags,
         )
         if results:
-            strided = _strided_retrieval(results, elastic_limit * 2)
-            threaded = _entity_thread(
-                strided, query, embedding, profile, elastic_limit * 2, tags, source
-            )
-            for r in threaded:
+            results = _strided_retrieval(results, elastic_limit * 2)
+            for r in results:
                 r["_sort_date"] = _extract_memory_date(r) or "9999"
-            threaded.sort(key=lambda r: r["_sort_date"])
-            results = threaded[:elastic_limit]
+            results.sort(key=lambda r: r["_sort_date"])
+            results = results[:elastic_limit]
         return results
 
     # Multi-hop temporal: entity-centric bridge retrieval + threading
@@ -389,30 +396,43 @@ def _search_memories_raw(
                 )
             return results
 
-    # Broad summary queries: strided retrieval for timeline coverage
+    # Cross-reference queries: spreading activation infrastructure is deployed
+    # (migration 020, spread_entity_activation_memories PL/pgSQL) but disabled
+    # pending production data with cross-session entity diversity. BEAM's
+    # single-chat profiles cause cluster saturation — activation is uniform.
+    # Enable via ENABLE_GRAPH_ACTIVATION when real multi-session data is available.
+    # if is_cross_reference_query(query):
+    #     results = hybrid_search(...)
+    #     return _merge_activation_results(results, query_entity_tags, profile, ...)
+
+    # Broad summary queries: strided retrieval for timeline diversity.
     if is_broad_summary_query(query):
         results = hybrid_search_memories(
-            query_text=query,
+            query_text=search_query,
             query_embedding=embedding,
             profile=profile,
             limit=elastic_limit * 5,
             tags=tags,
             source=source,
             profiles=profiles,
+            query_entity_tags=query_entity_tags,
         )
         if results:
             results = _strided_retrieval(results, elastic_limit)
-            results = _mmr_rerank(results, embedding, elastic_limit, lambda_param=0.5)
+
         return results
 
-    # Standard search path
-    fetch_limit = limit * 3 if has_temporal_intent(query) else limit
+    # Standard search path — fetch wider pool for TDR density check.
+    # NOTE: temporal queries keep limit*3 (not higher) — increasing to 5x
+    # regressed temporal-reasoning by -1.5pp because extra candidates dilute
+    # _temporal_rerank's top-k. Non-temporal gets 3x for TDR headroom.
+    fetch_limit = limit * 3
 
     if graph_depth > 0:
         from ogham.database import graph_augmented_search
 
         results = graph_augmented_search(
-            query_text=query,
+            query_text=search_query,
             query_embedding=embedding,
             profile=profile,
             limit=fetch_limit,
@@ -421,15 +441,27 @@ def _search_memories_raw(
             source=source,
         )
     else:
+        # Standard path gets gated recency decay (0.01 = ~69-day half-life).
+        # Ordering and summary paths above do NOT get recency decay because
+        # they need evidence from across the full timeline.
         results = hybrid_search_memories(
-            query_text=query,
+            query_text=search_query,
             query_embedding=embedding,
             profile=profile,
             limit=fetch_limit,
             tags=tags,
             source=source,
             profiles=profiles,
+            query_entity_tags=query_entity_tags,
+            recency_decay=0.01,
         )
+
+    # Temporal Diversity Re-ranking (TDR): density-gated soft penalty.
+    # Fires only when top-20 results are temporally clustered (≥80% in ≤5%
+    # of the total time-range). Prevents semantic density collapse on
+    # multi-session counting queries without forced injection.
+    if results and len(results) > limit:
+        results = _tdr_rerank(results, limit)
 
     # Single-anchor temporal re-ranking
     if results and has_temporal_intent(query):
@@ -615,6 +647,122 @@ def _exact_content_search(anchor: str, profile: str, limit: int) -> list[dict[st
     return []
 
 
+def _tdr_rerank(
+    results: list[dict[str, Any]],
+    limit: int,
+    density_threshold: float = 0.80,
+    spread_threshold: float = 0.05,
+    decay_lambda: float = 0.8,
+    null_date_penalty: float = 0.95,
+) -> list[dict[str, Any]]:
+    """Temporal Diversity Re-ranking with density gating.
+
+    Prevents semantic density collapse on multi-session counting queries
+    by soft-penalising results from already-represented dates. Only fires
+    when the top-20 results are temporally clustered.
+
+    Design: Gemini 3.1 Pro stress-test (2026-04-11), refined via three
+    peer-review rounds. Key principle: SOFT re-ranking only, never forced
+    injection (boundary-anchoring regressed -1.5pp on temporal-reasoning).
+
+    Args:
+        density_threshold: gate fires when this fraction of top-20 falls
+            within spread_threshold of the total time-range (default 0.80)
+        spread_threshold: what fraction of total time-range counts as
+            "clustered" (default 0.05 = 5%)
+        decay_lambda: penalty base per duplicate date (default 0.8)
+        null_date_penalty: baseline multiplier for date-less memories (0.95)
+    """
+    if len(results) <= limit:
+        return results
+
+    # Extract dates for all candidates
+    dated_results: list[tuple[str | None, int, dict]] = []
+    for i, r in enumerate(results):
+        d = _extract_memory_date(r)
+        dated_results.append((d, i, r))
+
+    # Compute temporal spread ratio on top-20
+    top_20 = dated_results[:20]
+    all_dates = [d for d, _, _ in dated_results if d is not None]
+    top_20_dates = [d for d, _, _ in top_20 if d is not None]
+
+    if len(all_dates) < 2 or len(top_20_dates) < 2:
+        # Not enough dated memories to compute spread — pass through
+        return results[:limit]
+
+    all_dates_sorted = sorted(all_dates)
+    total_range_days = max(
+        1,
+        (_date_to_ordinal(all_dates_sorted[-1]) - _date_to_ordinal(all_dates_sorted[0])),
+    )
+
+    top_20_sorted = sorted(top_20_dates)
+    top_20_range_days = _date_to_ordinal(top_20_sorted[-1]) - _date_to_ordinal(top_20_sorted[0])
+
+    spread_ratio = top_20_range_days / total_range_days if total_range_days > 0 else 1.0
+    top_20_concentration = len(top_20_dates) / max(len(top_20), 1)
+
+    # Density gate: do top-20 cluster in a narrow time band?
+    if not (top_20_concentration >= density_threshold and spread_ratio <= spread_threshold):
+        # Top-20 are already diverse — no TDR needed
+        return results[:limit]
+
+    logger.debug(
+        "TDR gate fired: %.0f%% of top-20 in %.1f%% of time-range (threshold: %.0f%%/%.0f%%)",
+        top_20_concentration * 100,
+        spread_ratio * 100,
+        density_threshold * 100,
+        spread_threshold * 100,
+    )
+
+    # Greedy selection with soft date-penalty
+    selected: list[dict] = []
+    date_counts: dict[str, int] = {}
+    _null_counter = 0
+
+    for date_str, _orig_idx, r in dated_results:
+        if len(selected) >= limit:
+            break
+
+        relevance = r.get("relevance", 0.0)
+
+        if date_str is None:
+            # Null-date: unique virtual bucket per memory + baseline penalty
+            _null_counter += 1
+            bucket = f"_null_{_null_counter}"
+            penalty = null_date_penalty
+        else:
+            bucket = date_str
+            count = date_counts.get(bucket, 0)
+            penalty = decay_lambda**count
+
+        adjusted_score = relevance * penalty
+
+        # Only select if the adjusted score is positive
+        if adjusted_score > 0:
+            r["_tdr_adjusted"] = adjusted_score
+            r["_tdr_bucket"] = bucket
+            selected.append(r)
+            date_counts[bucket] = date_counts.get(bucket, 0) + 1
+
+    # Re-sort by adjusted score (highest first)
+    selected.sort(key=lambda r: r.get("_tdr_adjusted", 0), reverse=True)
+
+    return selected[:limit]
+
+
+def _date_to_ordinal(date_str: str) -> int:
+    """Convert YYYY-MM-DD string to an ordinal day number for arithmetic."""
+    try:
+        parts = date_str.split("-")
+        from datetime import date
+
+        return date(int(parts[0]), int(parts[1]), int(parts[2])).toordinal()
+    except (ValueError, IndexError):
+        return 0
+
+
 _CONTENT_DATE_RE = re.compile(r"\[Date:\s*(\d{4}-\d{2}-\d{2})\]")
 
 # Direction keywords for asymmetric temporal decay
@@ -639,6 +787,96 @@ def _extract_memory_date(r: dict[str, Any]) -> str | None:
         return created
 
     return None
+
+
+def _boundary_anchored_inject(
+    results: list[dict[str, Any]],
+    query: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Force-inject the chronological boundary nodes into the result set.
+
+    For temporal-reasoning queries ("how long since X", "how many weeks between"),
+    the reader needs the earliest and latest mentions relative to the query's
+    temporal anchor to establish the timeline boundaries. Without them it
+    guesses dates or returns "no information".
+
+    Algorithm (per Gemini 3.1 Pro stress-test, 2026-04-11):
+      1. Extract dates from all candidates
+      2. Find top-1 chronologically BEFORE the anchor (or earliest overall)
+      3. Find top-1 chronologically AFTER the anchor (or latest overall)
+      4. Force-inject both into the result set (deduplicated)
+      5. Fill remaining slots from the semantic ranker
+
+    This is a deterministic boundary lookup, not a diversity re-ranker.
+    Immune to thin-profile risk because it doesn't care about density.
+    """
+    if not results or len(results) <= 2:
+        return results
+
+    # Date every candidate
+    dated: list[tuple[str, dict]] = []
+    for r in results:
+        d = _extract_memory_date(r)
+        if d:
+            dated.append((d, r))
+
+    if len(dated) < 2:
+        return results  # not enough dated memories to establish boundaries
+
+    dated.sort(key=lambda x: x[0])
+
+    # Try to find anchor date from query via extract_dates
+    from ogham.extraction import extract_dates
+
+    query_dates = extract_dates(query)
+    if query_dates:
+        # Use the first extracted date as anchor
+        anchor = query_dates[0]
+    else:
+        # No explicit anchor — use the midpoint of the date range
+        anchor = dated[len(dated) // 2][0]
+
+    # Boundary: latest memory BEFORE anchor
+    before = None
+    for date_str, r in reversed(dated):
+        if date_str <= anchor:
+            before = r
+            break
+
+    # Boundary: earliest memory AFTER anchor
+    after = None
+    for date_str, r in dated:
+        if date_str >= anchor:
+            after = r
+            break
+
+    # If anchor is outside the range, use the edges
+    if before is None:
+        before = dated[0][1]
+    if after is None:
+        after = dated[-1][1]
+
+    # Force-inject boundary nodes at the front, deduped
+    seen_ids: set[str] = set()
+    injected: list[dict] = []
+
+    for boundary in [before, after]:
+        rid = str(boundary.get("id", ""))
+        if rid and rid not in seen_ids:
+            seen_ids.add(rid)
+            injected.append(boundary)
+
+    # Fill remaining slots from the original order, deduped
+    for r in results:
+        if len(injected) >= limit:
+            break
+        rid = str(r.get("id", ""))
+        if rid not in seen_ids:
+            seen_ids.add(rid)
+            injected.append(r)
+
+    return injected[:limit]
 
 
 def _detect_direction(query: str) -> str:
@@ -987,6 +1225,187 @@ def _strided_retrieval(results: list[dict], limit: int) -> list[dict]:
             diversified.append(r)
 
     return diversified[:limit]
+
+
+def _graph_rerank(
+    results: list[dict],
+    query_entity_tags: list[str] | None,
+    profile: str,
+    boost_weight: float = 0.3,
+) -> list[dict]:
+    """Re-rank results using structured entity graph connectivity.
+
+    Uses the memory_entities table to boost results that share entities
+    with the query and with each other. Unlike _entity_thread (which does
+    a second text search), this only re-ranks existing results -- no new
+    candidates, no dilution.
+
+    Boost = (query_overlap + cross_connectivity) * boost_weight
+    - query_overlap: fraction of query entities found in this result's entities
+    - cross_connectivity: fraction of result's entities shared by 2+ other results
+    """
+    if not results or len(results) <= 1:
+        return results
+
+    from ogham.backends.postgres import PostgresBackend
+    from ogham.database import get_backend
+
+    backend = get_backend()
+    if not isinstance(backend, PostgresBackend):
+        return results
+
+    # Batch lookup: get entity IDs for all result memory IDs
+    mem_ids = [r.get("id") for r in results if r.get("id")]
+    if not mem_ids:
+        return results
+
+    try:
+        pool = backend._get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                # Get entity sets for each memory in the result set
+                cur.execute(
+                    """
+                    SELECT me.memory_id, array_agg(e.canonical_name || ':' || e.entity_type)
+                    FROM memory_entities me
+                    JOIN entities e ON e.id = me.entity_id
+                    WHERE me.memory_id = ANY(%s) AND me.profile = %s
+                    GROUP BY me.memory_id
+                    """,
+                    (mem_ids, profile),
+                )
+                mem_entities: dict[str, set[str]] = {}
+                for mid, ents in cur.fetchall():
+                    mem_entities[str(mid)] = set(ents)
+    except Exception:
+        return results
+
+    if not mem_entities:
+        return results
+
+    # Build entity frequency map across all results (for connectivity scoring)
+    entity_freq: dict[str, int] = {}
+    for ents in mem_entities.values():
+        for e in ents:
+            entity_freq[e] = entity_freq.get(e, 0) + 1
+
+    # Normalise query entity tags for matching (e.g. "person:John" -> "John:person")
+    query_ent_set: set[str] = set()
+    if query_entity_tags:
+        for tag in query_entity_tags:
+            parts = tag.split(":", 1)
+            if len(parts) == 2:
+                query_ent_set.add(f"{parts[1]}:{parts[0]}")
+
+    # Score each result
+    for r in results:
+        rid = str(r.get("id", ""))
+        ents = mem_entities.get(rid, set())
+        if not ents:
+            continue
+
+        # 1. Query overlap: what fraction of query entities does this memory have?
+        query_overlap = 0.0
+        if query_ent_set:
+            overlap = len(ents & query_ent_set)
+            query_overlap = overlap / len(query_ent_set)
+
+        # 2. Cross-connectivity: what fraction of this memory's entities appear
+        #    in 2+ other results? (shared entities = topical cluster)
+        shared = sum(1 for e in ents if entity_freq.get(e, 0) >= 2)
+        connectivity = shared / len(ents) if ents else 0.0
+
+        # Combined boost (capped at 1.0 to prevent over-boosting)
+        boost = min(1.0, query_overlap + connectivity * 0.5) * boost_weight
+
+        if "relevance" in r and r["relevance"] is not None:
+            r["relevance"] = r["relevance"] * (1.0 + boost)
+
+    results.sort(key=lambda r: r.get("relevance", 0), reverse=True)
+    return results
+
+
+def _merge_activation_results(
+    hybrid_results: list[dict],
+    query_entity_tags: list[str] | None,
+    profile: str,
+    limit: int,
+    graph_fraction: float = 0.3,
+    activation_weight: float = 0.15,
+) -> list[dict]:
+    """Merge hybrid search results with spreading activation graph walk.
+
+    Two parallel signals:
+    1. Hybrid search (semantic + keyword) -> relevance score
+    2. Entity graph walk (spreading activation) -> activation score
+
+    Memories in both sets get boosted. Graph-only memories (no hybrid match)
+    enter as "bridge" documents at graph_fraction of the result set.
+    """
+    if not query_entity_tags:
+        return hybrid_results[:limit]
+
+    try:
+        activated = spread_entity_activation(
+            entity_tags=query_entity_tags,
+            profile=profile,
+            max_depth=2,
+            decay=0.65,
+            min_activation=0.05,
+            max_results=limit * 3,
+        )
+    except Exception:
+        logger.debug("Spreading activation failed, falling back to hybrid only")
+        return hybrid_results[:limit]
+
+    if not activated:
+        return hybrid_results[:limit]
+
+    # Build activation lookup: memory_id -> activation score
+    act_map: dict[str, float] = {}
+    for row in activated:
+        mid = str(row.get("memory_id", ""))
+        act = float(row.get("activation", 0))
+        act_map[mid] = max(act_map.get(mid, 0), act)
+
+    # Squash activation via tanh to prevent runaway MRR-theft from
+    # highly connected clusters. tanh caps influence while preserving
+    # differential signal from bridge entities.
+    import math
+
+    act_map = {k: math.tanh(v) for k, v in act_map.items()}
+
+    # Score hybrid results: relevance + activation_weight * activation
+    hybrid_ids: set[str] = set()
+    for r in hybrid_results:
+        rid = str(r.get("id", ""))
+        hybrid_ids.add(rid)
+        act = act_map.get(rid, 0.0)
+        base = r.get("relevance", 0) or 0
+        r["relevance"] = base + activation_weight * act
+
+    # Re-sort by boosted relevance (re-ranking only — no eviction risk)
+    hybrid_results.sort(key=lambda r: r.get("relevance", 0), reverse=True)
+
+    # Conditional expansion: for cross-reference queries, append a small
+    # number of graph-only candidates at the END (not interleaved).
+    # These are "bridge" documents with zero semantic overlap but strong
+    # entity connections. Appended, not interleaved, so they never displace
+    # the golden semantic result at Rank 1.
+    if graph_fraction > 0 and act_map:
+        from ogham.database import get_memory_by_id
+
+        n_expand = min(3, int(limit * graph_fraction))
+        for mid, act in sorted(act_map.items(), key=lambda x: -x[1]):
+            if mid not in hybrid_ids and n_expand > 0:
+                mem = get_memory_by_id(mid, profile)
+                if mem:
+                    mem["relevance"] = activation_weight * act
+                    mem["_graph_only"] = True
+                    hybrid_results.append(mem)
+                    n_expand -= 1
+
+    return hybrid_results[:limit]
 
 
 def _mmr_rerank(

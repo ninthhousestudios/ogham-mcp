@@ -9,6 +9,7 @@ import re
 from datetime import datetime
 
 import parsedatetime
+from geotext import GeoText as _GeoText
 from stop_words import AVAILABLE_LANGUAGES, get_stop_words
 
 from ogham.data.loader import (
@@ -160,6 +161,87 @@ def has_temporal_intent(query: str) -> bool:
     return bool(words & TEMPORAL_KEYWORDS)
 
 
+# --- Query reformulation ---
+# Bridges the gap between how users phrase questions ("when did I first
+# mention X?") and how content is stored ("X is important because...").
+# Uses the multilingual stop_words package + YAML query_filler lists.
+# Zero model dependency, zero latency.
+
+_QUERY_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})\b")
+
+# Per-language stopword cache (lazy init)
+_query_stopwords_cache: dict[str, set[str]] = {}
+
+
+def _get_query_stopwords(lang: str = "en") -> set[str]:
+    """Build stopword set for query reformulation from YAML query_filler only.
+
+    Does NOT use the stop_words package -- that's too aggressive for query
+    reformulation (kills content words like "first", "move"). The YAML
+    query_filler list is intentionally tight: only true function words
+    (pronouns, articles, prepositions, auxiliaries) and query-specific filler.
+    """
+    if lang not in _query_stopwords_cache:
+        from ogham.data.loader import get_query_filler
+
+        base: set[str] = set()
+        base.update(get_query_filler(lang))
+        # Always include English filler as a baseline
+        if lang != "en":
+            base.update(get_query_filler("en"))
+        _query_stopwords_cache[lang] = base
+    return _query_stopwords_cache[lang]
+
+
+def reformulate_query(query: str) -> str:
+    """Reformulate a user query into search-optimized keywords.
+
+    Strips filler/question words using multilingual stopwords + YAML
+    query_filler lists. Preserves proper nouns, dates, and quoted strings.
+    Returns the reformulated query for use as the query_text in
+    hybrid_search_memories (keyword/tsvector path). The original query
+    should still be used for embedding generation.
+
+    If the reformulation produces nothing useful (< 2 keywords),
+    returns the original query unchanged.
+    """
+    if not query or len(query) < 5:
+        return query
+
+    stopwords = _get_query_stopwords()
+
+    # Preserve quoted strings verbatim
+    quoted = re.findall(r"'([^']+)'|\"([^\"]+)\"", query)
+    quoted_terms = [q[0] or q[1] for q in quoted]
+
+    # Preserve dates
+    dates = _QUERY_DATE_RE.findall(query)
+
+    # Extract keywords: proper nouns (capitalized) and content words (len >= 4)
+    words = re.findall(r"\b[\w'-]+\b", query)
+    keywords: list[str] = []
+    for w in words:
+        if w.lower() in stopwords:
+            continue
+        if w[0].isupper() or len(w) >= 4:
+            keywords.append(w)
+
+    combined = quoted_terms + dates + keywords
+    if len(combined) < 2:
+        return query
+
+    # Dedupe preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for term in combined:
+        key = term.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(term)
+
+    return " ".join(out)
+
+
 # --- Multi-hop temporal detection + entity extraction ---
 
 _MULTI_HOP_PATTERNS = re.compile(
@@ -205,6 +287,7 @@ _ORDERING_PATTERNS = re.compile(
     r"|from latest to earliest"
     r"|in (?:chronological|reverse) order"
     r"|list the order"
+    r"|list in order"
     r"|walk me through the order"
     r"|in (?:what|which) order"
     r"|the sequence (?:of|in which)",
@@ -222,15 +305,42 @@ def is_multi_hop_temporal(query: str) -> bool:
     return bool(_MULTI_HOP_PATTERNS.search(query))
 
 
+_CROSS_REF_PATTERNS = re.compile(
+    r"how many (?:different |unique |total )\w+"
+    r"|how many .{0,50}across (?:my |our |all )?"
+    r"(?:\w+ )?(?:sessions?|conversations?|requests?|messages?|questions?)"
+    r"|how many .{0,30}(?:in total|total)"
+    r"|how much .{0,30}(?:in total|total|altogether|improve)"
+    r"|between .{3,50} and .{3,50}, (?:which|what|how)"
+    r"|considering .{5,80}, how"
+    r"|given .{5,80}, how"
+    r"|how (?:have|has|did) .{3,40} (?:evolved?|changed?|improved?|progressed?)"
+    r"|how .{0,20}compare"
+    r"|what (?:two|three|all) .{3,30}(?:did I|am I|have I)",
+    re.IGNORECASE,
+)
+
+
+def is_cross_reference_query(query: str) -> bool:
+    """Detect aggregation / N-way comparison queries needing entity threading.
+
+    These are set-logic queries (how many total, between X and Y, considering
+    X Y Z) as opposed to the sequence-logic detected by is_multi_hop_temporal.
+    """
+    return bool(_CROSS_REF_PATTERNS.search(query))
+
+
 _SUMMARY_PATTERNS = re.compile(
     r"comprehensive summary"
-    r"|summarize (?:all|everything|my)"
-    r"|summary of (?:all|everything|how|my)"
+    r"|summarize (?:all|everything|my|how)"
+    r"|summary of (?:all|everything|how|my|what)"
     r"|overview of (?:all|everything|how|my)"
     r"|how .{0,30} has progressed"
-    r"|give me a (?:full|complete|comprehensive)"
+    r"|how .{0,30} have (?:developed|evolved|changed)"
+    r"|give me a (?:full|complete|comprehensive|summary)"
     r"|progress.{0,20}including"
-    r"|across (?:all|my) (?:sessions?|conversations?)",
+    r"|across (?:all|my) (?:sessions?|conversations?)"
+    r"|over (?:time|the course)",
     re.IGNORECASE,
 )
 
@@ -491,12 +601,6 @@ _POSSESSIVE_TRIGGERS: set[str] = get_all_possessive_triggers()
 _QUANTITY_UNITS: set[str] = get_all_quantity_units()
 _PREFERENCE_WORDS: set[str] = get_all_preference_words()
 
-# GeoText for location extraction (pre-compiled city/country database from GeoNames)
-try:
-    from geotext import GeoText as _GeoText
-except ImportError:
-    _GeoText = None
-
 # Pre-compile quantity pattern: number + unit, excluding years
 _QUANTITY_PATTERN = re.compile(
     r"\b(?!(?:19|20)\d{2}\b)(\d+(?:\.\d+)?)\s+("
@@ -689,21 +793,20 @@ def extract_entities(content: str) -> list[str]:
             pref_count += 1
 
     # Locations: GeoText city/country extraction (GeoNames database, no LLM)
-    if _GeoText is not None:
-        try:
-            places = _GeoText(content)
-            loc_count = 0
-            for city in places.cities:
-                if loc_count >= 2:
-                    break
-                entities.add(f"location:{city}")
-                loc_count += 1
-            for country in places.country_mentions:
-                if loc_count >= 3:
-                    break
-                entities.add(f"location:{country}")
-                loc_count += 1
-        except Exception:
-            logger.debug("GeoText extraction failed, skipping locations")
+    try:
+        places = _GeoText(content)
+        loc_count = 0
+        for city in places.cities:
+            if loc_count >= 2:
+                break
+            entities.add(f"location:{city}")
+            loc_count += 1
+        for country in places.country_mentions:
+            if loc_count >= 3:
+                break
+            entities.add(f"location:{country}")
+            loc_count += 1
+    except Exception:
+        logger.debug("GeoText extraction failed, skipping locations")
 
     return sorted(entities)[:20]

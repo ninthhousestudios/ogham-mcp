@@ -125,6 +125,8 @@ class GatewayBackend:
         tags: list[str] | None = None,
         source: str | None = None,
         profiles: list[str] | None = None,
+        query_entity_tags: list[str] | None = None,
+        recency_decay: float = 0.0,
     ) -> list[dict[str, Any]]:
         body: dict[str, Any] = {
             "query": query_text,

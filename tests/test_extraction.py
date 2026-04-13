@@ -135,7 +135,7 @@ def test_extract_entities_cap():
 
     content = " ".join(f"FooBar{i} BazQux{i}" for i in range(20))
     entities = extract_entities(content)
-    assert len(entities) <= 15
+    assert len(entities) <= 20
 
 
 def test_compute_importance_decision():

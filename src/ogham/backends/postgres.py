@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
+import os
+from contextlib import contextmanager
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -13,6 +16,52 @@ from ogham.config import settings
 from ogham.retry import with_retry
 
 logger = logging.getLogger(__name__)
+
+# Tenant context for multi-tenant deployments (e.g. the gateway).
+#
+# When set, every connection checkout in this backend will run
+# `SELECT set_config('app.tenant_id', <id>, true)` so that Postgres
+# row-level security policies on memories / memory_relationships /
+# embeddings_cache can scope queries to the current tenant via
+# `current_setting('app.tenant_id', true)`.
+#
+# Variable name `app.tenant_id` is intentionally consistent with the
+# existing Phase 1 tenant_context helper at
+# gateway/src/ogham_gateway/middleware/tenant.py and the embedding_cache
+# RLS policies that have been in production since 2026-03-16. This
+# Phase 2 refactor extends the same convention to ALL ogham core DB
+# operations, not just embedding cache.
+#
+# Self-hosted users never set this contextvar; the checkout helper
+# becomes a no-op and behaviour is identical to before. This means the
+# refactor introduces ZERO behavioural change for single-tenant
+# deployments while enabling DB-enforced isolation for multi-tenant
+# deployments without changing the public ogham API.
+#
+# `set_config(..., true)` is transaction-local, which is compatible
+# with PgBouncer transaction-pooling mode (Neon, Supabase pooled
+# endpoints). Unlike `SET LOCAL`, set_config supports parameterised
+# values so we don't need an f-string + UUID-validation pattern.
+_tenant_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ogham_tenant_id", default=None
+)
+
+
+def set_tenant_context(tenant_id: str | None) -> None:
+    """Set the current tenant ID for subsequent DB operations.
+
+    Multi-tenant callers (e.g. the Ogham gateway) call this in their
+    request middleware after authenticating the caller. Self-hosted
+    callers do not need to call this -- the default `None` is a no-op
+    and behaviour is identical to before this function existed.
+    """
+    _tenant_id_var.set(tenant_id)
+
+
+def get_tenant_context() -> str | None:
+    """Return the currently set tenant ID, or None."""
+    return _tenant_id_var.get()
+
 
 # Allowlist of valid memory table columns to prevent SQL injection via dynamic column names
 _ALLOWED_MEMORY_COLUMNS = frozenset(
@@ -54,8 +103,8 @@ class PostgresBackend:
                 raise RuntimeError("DATABASE_URL is required for PostgresBackend")
             self._pool = ConnectionPool(
                 conninfo=settings.database_url,
-                min_size=1,
-                max_size=5,
+                min_size=int(os.environ.get("OGHAM_POOL_MIN", "1")),
+                max_size=int(os.environ.get("OGHAM_POOL_MAX", "5")),
                 kwargs={"row_factory": dict_row},
             )
             self._ensure_columns()
@@ -89,6 +138,29 @@ class PostgresBackend:
 
     # ── Helper ────────────────────────────────────────────────────────
 
+    @contextmanager
+    def _checkout(self):
+        """Check out a connection from the pool with tenant context applied.
+
+        If `set_tenant_context()` has been called on the current task /
+        thread, this runs `SELECT set_config('app.tenant_id', <id>, true)`
+        before yielding the connection. The `true` makes it transaction-local,
+        so it works correctly with PgBouncer transaction pooling. Variable
+        name matches the existing Phase 1 tenant_context helper used by
+        embedding_cache RLS.
+
+        Self-hosted callers never set the contextvar -- this becomes a
+        plain `with pool.connection()` and behaves exactly as before.
+        """
+        with self._get_pool().connection() as conn:
+            tenant_id = _tenant_id_var.get()
+            if tenant_id is not None:
+                conn.execute(
+                    "SELECT set_config('app.tenant_id', %s, true)",
+                    (tenant_id,),
+                )
+            yield conn
+
     def _execute(
         self,
         query: str,
@@ -101,7 +173,7 @@ class PostgresBackend:
         fetch: "all" -> list[dict], "one" -> dict|None,
                "scalar" -> single value, "none" -> None
         """
-        with self._get_pool().connection() as conn:
+        with self._checkout() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, params)
                 if fetch == "none":
@@ -185,7 +257,7 @@ class PostgresBackend:
         if not rows:
             return []
         results: list[dict[str, Any]] = []
-        with self._get_pool().connection() as conn:
+        with self._checkout() as conn:
             with conn.cursor() as cur:
                 for row in rows:
                     cols = list(row.keys())
@@ -288,7 +360,7 @@ class PostgresBackend:
         }
         return self._execute(
             "SELECT * FROM match_memories("
-            "  %(embedding)s::vector, %(threshold)s, %(limit)s,"
+            "  %(embedding)s::vector, %(threshold)s::float, %(limit)s::integer,"
             "  %(tags)s, %(source)s, %(profile)s"
             ")",
             params,
@@ -304,6 +376,8 @@ class PostgresBackend:
         tags: list[str] | None = None,
         source: str | None = None,
         profiles: list[str] | None = None,
+        query_entity_tags: list[str] | None = None,
+        recency_decay: float = 0.0,
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
             "query_text": query_text,
@@ -313,12 +387,15 @@ class PostgresBackend:
             "tags": tags,
             "source": source,
             "profiles": profiles,
+            "query_entity_tags": query_entity_tags,
+            "recency_decay": recency_decay,
         }
         return self._execute(
             "SELECT * FROM hybrid_search_memories("
-            "  %(query_text)s, %(embedding)s::vector, %(limit)s,"
+            "  %(query_text)s, %(embedding)s::vector, %(limit)s::integer,"
             "  %(profile)s, %(tags)s, %(source)s,"
-            "  0.3, 0.7, 10, %(profiles)s"
+            "  0.3::float, 0.7::float, 10::integer, %(profiles)s, %(query_entity_tags)s,"
+            "  %(recency_decay)s::float"
             ")",
             params,
         )
@@ -571,7 +648,7 @@ class PostgresBackend:
         return self._execute(
             "SELECT * FROM explore_memory_graph("
             "  %(query_text)s, %(embedding)s::vector, %(profile)s,"
-            "  %(limit)s, %(depth)s, %(min_strength)s,"
+            "  %(limit)s::integer, %(depth)s::integer, %(min_strength)s::float,"
             "  %(tags)s, %(source)s"
             ")",
             {
@@ -584,6 +661,40 @@ class PostgresBackend:
                 "tags": tags,
                 "source": source,
             },
+        )
+
+    def spread_entity_activation(
+        self,
+        entity_tags: list[str],
+        profile: str,
+        max_depth: int = 2,
+        decay: float = 0.65,
+        min_activation: float = 0.05,
+        max_results: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Walk the entity graph and return activated memories."""
+        return self._execute(
+            "SELECT memory_id, activation"
+            " FROM spread_entity_activation_memories("
+            "  %(tags)s, %(profile)s, %(max_depth)s,"
+            "  %(decay)s, %(min_activation)s, %(max_results)s"
+            ")",
+            {
+                "tags": entity_tags,
+                "profile": profile,
+                "max_depth": max_depth,
+                "decay": decay,
+                "min_activation": min_activation,
+                "max_results": max_results,
+            },
+        )
+
+    def refresh_entity_temporal_span(self, entity_id: int) -> None:
+        """Update temporal_span for a single entity after ingest."""
+        self._execute(
+            "SELECT refresh_entity_temporal_span(%(eid)s)",
+            {"eid": entity_id},
+            fetch="none",
         )
 
     def create_relationship(
@@ -626,8 +737,8 @@ class PostgresBackend:
     ) -> list[dict[str, Any]]:
         return self._execute(
             "SELECT * FROM get_related_memories("
-            "  %(memory_id)s, %(depth)s, %(min_strength)s,"
-            "  %(types)s::relationship_type[], %(limit)s"
+            "  %(memory_id)s, %(depth)s::integer, %(min_strength)s::float,"
+            "  %(types)s::relationship_type[], %(limit)s::integer"
             ")",
             {
                 "memory_id": memory_id,

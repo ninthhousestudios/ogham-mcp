@@ -64,7 +64,15 @@ def test_facade_delegates_hybrid_search():
     )
 
     mock.hybrid_search_memories.assert_called_once_with(
-        "hello", [0.1, 0.2], "default", None, None, None, None
+        "hello",
+        [0.1, 0.2],
+        "default",
+        None,
+        None,
+        None,
+        None,
+        query_entity_tags=None,
+        recency_decay=0.0,
     )
 
 
