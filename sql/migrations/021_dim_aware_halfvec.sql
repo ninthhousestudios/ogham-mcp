@@ -1,4 +1,4 @@
--- Migration 020: Dim-aware halfvec casts in all RPC functions and HNSW index.
+-- Migration 021: Dim-aware halfvec casts in all RPC functions and HNSW index.
 --
 -- Background
 -- ----------
@@ -23,7 +23,7 @@
 -- session before running the migration to opt in:
 --
 --     SET ogham.rebuild_hnsw = 'on';
---     \i sql/migrations/020_dim_aware_halfvec.sql
+--     \i sql/migrations/021_dim_aware_halfvec.sql
 --
 -- Idempotent. No data migration. Safe no-op on non-halfvec deployments
 -- (e.g. Supabase Cloud at 768 dims using plain vector ops).
@@ -48,12 +48,12 @@ begin
       and a.attnum > 0;
 
     if col_type is null then
-        raise notice 'Migration 020: memories.embedding not found; run your schema file first. Skipping.';
+        raise notice 'Migration 021: memories.embedding not found; run your schema file first. Skipping.';
         return;
     end if;
 
     if col_type not like '%halfvec%' and col_type not like 'vector(%' then
-        raise notice 'Migration 020: memories.embedding is % (no typmod or non-halfvec); skipping. Re-run sql/schema.sql for this backend.', col_type;
+        raise notice 'Migration 021: memories.embedding is % (no typmod or non-halfvec); skipping. Re-run sql/schema.sql for this backend.', col_type;
         return;
     end if;
 
@@ -61,11 +61,11 @@ begin
     embed_dim := nullif(substring(col_type from '\((\d+)\)'), '')::int;
 
     if embed_dim is null then
-        raise notice 'Migration 020: could not parse dimension from column type %; skipping.', col_type;
+        raise notice 'Migration 021: could not parse dimension from column type %; skipping.', col_type;
         return;
     end if;
 
-    raise notice 'Migration 020: detected memories.embedding dimension = %', embed_dim;
+    raise notice 'Migration 021: detected memories.embedding dimension = %', embed_dim;
 
     -- 1b. Drop every existing overload of the functions we are about to recreate.
     --
@@ -310,17 +310,17 @@ begin
     rebuild_idx := current_setting('ogham.rebuild_hnsw', true);
 
     if rebuild_idx = 'on' then
-        raise notice 'Migration 020: rebuilding memories_embedding_idx HNSW at dim=% (this may take a while on large tables)', embed_dim;
+        raise notice 'Migration 021: rebuilding memories_embedding_idx HNSW at dim=% (this may take a while on large tables)', embed_dim;
         execute 'drop index if exists memories_embedding_idx';
         execute format(
             'create index memories_embedding_idx on memories using hnsw ((embedding::halfvec(%1$s)) halfvec_cosine_ops) with (m = 16, ef_construction = 64)',
             embed_dim
         );
-        raise notice 'Migration 020: HNSW index rebuilt at dim=%.', embed_dim;
+        raise notice 'Migration 021: HNSW index rebuilt at dim=%.', embed_dim;
     else
-        raise notice 'Migration 020: HNSW index NOT rebuilt. The existing memories_embedding_idx still casts to the original dim and will NOT be used for queries at dim=%. To rebuild: SET ogham.rebuild_hnsw = ''on''; then re-run this migration.', embed_dim;
+        raise notice 'Migration 021: HNSW index NOT rebuilt. The existing memories_embedding_idx still casts to the original dim and will NOT be used for queries at dim=%. To rebuild: SET ogham.rebuild_hnsw = ''on''; then re-run this migration.', embed_dim;
     end if;
 
-    raise notice 'Migration 020: dim-aware functions installed at dim=%.', embed_dim;
+    raise notice 'Migration 021: dim-aware functions installed at dim=%.', embed_dim;
 end
 $mig$;
